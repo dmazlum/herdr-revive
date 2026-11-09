@@ -2,16 +2,28 @@
 
 [![CI](https://github.com/dmazlum/herdr-revive/actions/workflows/ci.yml/badge.svg)](https://github.com/dmazlum/herdr-revive/actions/workflows/ci.yml)
 
-Bring back the coding agent a [Herdr](https://herdr.dev) terminal lost, and fork a live
-session beside it.
+**Reboot all you like. Your agents come back.**
 
-Herdr keeps your terminals through app restarts and updates. When the machine reboots or
-herdr-core stops, each pane comes back with a fresh shell in the same folder, but the agent
-that was running there is gone. Revive remembers which session each terminal held and,
-when its shell comes back, starts that session again in the same pane, with the same
-flags.
+It's late and you have six agents going. Claude Code is halfway through the API refactor,
+Codex is on the frontend, Droid is in infra. Then the machine restarts for an update.
+[Herdr](https://herdr.dev) brings every pane back in the right folder, but each one now
+holds an empty shell. You're left scrolling `--resume` pickers, trying to work out which
+conversation lived where.
+
+With Revive, you open the lid and they're already back. Each terminal remembers its agent
+session. When the shell returns, the session returns with it: the same pane, the same
+conversation, the same model and flags. There's nothing to type and nothing running in the
+background. While an agent is live, one key forks its conversation into a new pane beside
+it.
+
+Works with **Claude Code**, **Codex**, **Cursor**, **Droid**, **pi** and **omp**.
 
 ![Revive](preview.png)
+
+> **Doesn't Herdr do this already?** The original `herdr` restores agent panes itself. The
+> Herdr desktop app and herdr-core don't yet: they will once agents can report how to resume
+> through OSC 7501 ([herdr-core#13](https://github.com/herdrdev/herdr-core/issues/13)).
+> Until then, Revive fills the gap.
 
 ## Requirements
 
@@ -40,6 +52,9 @@ What "experimental" means for each one is under [Limits](#limits).
   since it has nothing to resume. A shell you start inside a pane never resumes anything.
 - **Same flags.** The model, permission and sandbox modes come back with the session; see
   [What comes back](#what-comes-back) for what doesn't.
+- **Safe by default.** An automatic resume never brings back a flag that lifts approvals or
+  the sandbox (`--dangerously-skip-permissions`, `--yolo`, `--force`, …), and its dim line
+  says which it left out. Those come back only when you resume from the dialog.
 - **Fork.** Open the conversation of the focused agent as a new session beside it (right,
   below or in a new tab), with the same flags. Both work in the same folder: a fork copies
   the conversation, not the files.
@@ -59,18 +74,35 @@ only what is needed to continue the conversation, and filters the record again w
 reads it back, not only when it writes it.
 
 **Carried.** `--model` and similar flags, and permission and sandbox modes, so the session
-comes back the way it ran: Claude Code's `--permission-mode` and
-`--dangerously-skip-permissions`, Codex's approval and sandbox flags, Droid's `--auto`,
-Cursor's `--force`/`--yolo` and `--sandbox`, omp's `--auto-approve` and `--approval-mode`.
-The agent still waits for your input before it does anything.
+comes back the way it ran (`--permission-mode plan`, Codex's `-s workspace-write`, …). The
+agent still waits for your input before it does anything.
 
-**Only when you resume it yourself.** Flags that lift approvals or the sandbox
-(`--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, Codex's `--yolo`
-or `-a never`, Cursor's `--force`, omp's `--auto-approve`, Droid's `--auto`, pi's
-`--approve`, …) come back only in a resume you start from the dialog. An automatic resume
-after a reboot leaves them out and its dim line says which; quit the agent and resume it
-from the dialog to get them back. See [RECIPE.md](RECIPE.md#never-carried-and-why) for the
-full list.
+**Only when you resume it yourself.** Flags that lift approvals or the sandbox come back
+only in a resume you start from the dialog:
+
+| Agent | Left out of an automatic resume |
+| --- | --- |
+| Claude Code | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode` other than `default`, `manual`, `plan` or `dontAsk` |
+| Codex | `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`, `-a never`, `-s danger-full-access` |
+| Cursor | `-f`/`--force`, `--yolo`, `--sandbox` other than `enabled` |
+| omp | `--auto-approve`, `--plan-yolo`, `--approval-mode` |
+| Droid | `--auto` |
+| pi | `-a`/`--approve` |
+
+A label can be written by any program that talks to herdr-core, including an agent running
+under restricted permissions. A bypass it slipped into a record must not come back
+unrestricted after a reboot, with nobody watching. So the resumed pane says what it left
+out:
+
+```
+↻ Revive: resuming Claude Code session 9e458eb4 without --dangerously-skip-permissions (quit and resume it from the Revive dialog to keep it). REVIVE_AUTO=0 skips this.
+```
+
+Quit the agent and resume it from the dialog to get them back.
+
+**Names, not paths.** Flags that pick something by name are carried only with a plain name:
+Codex's and omp's `--profile`, Claude Code's `--agent` (`reviewer`, `my-plugin:reviewer`)
+and omp's `--skills` (`commit,review`). A value that looks like a path is dropped.
 
 **Left behind.**
 - The first prompt, `--resume` itself, and secrets (`--api-key`, `-H`).
@@ -93,9 +125,10 @@ run in a shell that has what's missing, with a **Copy command** button. It doesn
 the command itself, and offers no Resume or Fork for that session.
 
 **Working folder.** The session's folder is used by its real path, and only when it exists,
-is yours and is not writable by everyone. Otherwise the session is not resumed at all, not
-even by hand, since the agent would start in another folder with its flags. The dialog says
-which folder failed.
+is yours, and nobody else can write to it: not everyone, and not its group, unless that
+group is your own private one (as with a Linux umask of 002). Otherwise the session is not
+resumed at all, not even by hand, since the agent would start in another folder with its
+flags. The dialog says which folder failed.
 
 ## Install
 
