@@ -189,15 +189,19 @@ async function hook(args = []) {
 /**
  * A record read from labels, with its folder checked on disk: `cd` goes to
  * the folder's real path, and only to an existing folder that belongs to this
- * user and that others can't write to. Otherwise `cwdRefused` names the
- * recorded folder, and neither an automatic resume nor one by hand runs.
+ * user and that nobody else can write to: not anyone, and not its group,
+ * unless that group is the user's own private one (a Linux umask of 002 makes
+ * folders group-writable, with a group named after the user and no one else
+ * in it). Otherwise `cwdRefused` names the recorded folder, and neither an
+ * automatic resume nor one by hand runs.
  */
-export function vetRecord(rec, { uid = process.getuid?.() } = {}) {
+export function vetRecord(rec, { uid = process.getuid?.(), gid = process.getgid?.() } = {}) {
   if (!rec?.cwd) return rec;
   try {
     const real = realpathSync(rec.cwd);
     const st = statSync(real);
-    if (st.isDirectory() && (uid === undefined || st.uid === uid) && (st.mode & 0o002) === 0) return { ...rec, cwd: real };
+    const groupOk = (st.mode & 0o020) === 0 || (uid !== undefined && st.gid === gid && gid === uid);
+    if (st.isDirectory() && (uid === undefined || st.uid === uid) && (st.mode & 0o002) === 0 && groupOk) return { ...rec, cwd: real };
   } catch { /* gone */ }
   return { ...rec, cwd: null, cwdRefused: rec.cwd };
 }

@@ -79,7 +79,10 @@ Cursor are built from their docs and not tested end to end yet.
     **Install** button while anything is missing.
 - The list refreshes every 4 seconds while the dialog is open.
 - In a resumed pane, before the agent starts: `↻ Revive: resuming Claude Code session
-  9e458eb4. REVIVE_AUTO=0 skips this.` in dim text.
+  9e458eb4. REVIVE_AUTO=0 skips this.` in dim text. When flags that lift approvals or the
+  sandbox were left out: `↻ Revive: resuming Claude Code session 9e458eb4 without
+  --dangerously-skip-permissions (quit and resume it from the Revive dialog to keep it).
+  REVIVE_AUTO=0 skips this.`
 
 ## The files
 
@@ -146,10 +149,23 @@ value.
 The flags travel through a terminal label, which anything that can talk to herdr-core
 can write, and they come back unattended after a reboot.
 
-- Permission and sandbox modes are carried as recorded (`--dangerously-skip-permissions`,
-  `--permission-mode`, Codex's approval and sandbox flags, `--force`, `--auto-approve`,
-  …). A label writer already runs as the person, and a resumed agent waits for input
-  before it acts: the session comes back the way it ran.
+- Permission and sandbox modes are carried, but the ones that lift approvals or the
+  sandbox only into a resume the person starts from the dialog. An automatic resume
+  leaves them out and its dim line names them. A label writer may be an agent running
+  under restricted permissions (a prompt-injected one, say): a bypass it writes into a
+  label must not come back unrestricted after a reboot, with nobody watching it start.
+  Left out of an automatic resume (each agent's `unattended` in `lib/core.js`):
+  - Claude Code: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`,
+    `--permission-mode` other than `default`, `manual`, `plan` or `dontAsk`
+  - Codex: `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`,
+    `-a`/`--ask-for-approval never`, `-s`/`--sandbox danger-full-access`
+  - Cursor: `-f`/`--force`, `--yolo`, `--sandbox` other than `enabled`
+  - omp: `--auto-approve`, `--plan-yolo`, `--approval-mode` (any value)
+  - Droid: `--auto`
+  - pi: `-a`/`--approve`
+- Value flags that pick something by name take a plain name only, never a path: Codex's
+  and omp's `--profile`, Claude Code's `--agent` (an agent definition, `plugin:name`
+  allowed), omp's `--skills` (comma-separated names).
 - Never carried: flags that make the agent load something it would not load otherwise,
   because that runs code or instructions at once on resume: settings, hooks, extensions,
   plugins or MCP servers (`--settings`, `--mcp-config`, `--plugin-dir`,
