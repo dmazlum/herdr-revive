@@ -64,6 +64,14 @@ comes back the way it ran: Claude Code's `--permission-mode` and
 Cursor's `--force`/`--yolo` and `--sandbox`, omp's `--auto-approve` and `--approval-mode`.
 The agent still waits for your input before it does anything.
 
+**Only when you resume it yourself.** Flags that lift approvals or the sandbox
+(`--dangerously-skip-permissions`, `--permission-mode bypassPermissions`, Codex's `--yolo`
+or `-a never`, Cursor's `--force`, omp's `--auto-approve`, Droid's `--auto`, pi's
+`--approve`, …) come back only in a resume you start from the dialog. An automatic resume
+after a reboot leaves them out and its dim line says which; quit the agent and resume it
+from the dialog to get them back. See [RECIPE.md](RECIPE.md#never-carried-and-why) for the
+full list.
+
 **Left behind.**
 - The first prompt, `--resume` itself, and secrets (`--api-key`, `-H`).
 - Anything that makes the agent load code, configuration or instructions it wouldn't load

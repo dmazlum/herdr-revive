@@ -19,6 +19,12 @@ export const KEYS = ["agent", "session", "cwd", "flags", "env", "needs", "transc
  */
 /** A value flag that names one of the person's own profiles, not a path. */
 const NAME = { arg: 1, ok: (v) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(v) };
+/** One agent definition by name (`reviewer`, a plugin's `plugin:reviewer`), never a path. */
+const AGENT_NAME = { arg: 1, ok: (v) => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(v) && !v.includes("..") };
+/** A comma-separated list of names (`commit,review`), never a path. */
+const NAMES = { arg: 1, ok: (v) => /^[A-Za-z0-9][A-Za-z0-9_.:-]*(,[A-Za-z0-9][A-Za-z0-9_.:-]*)*$/.test(v) && v.length <= 512 && !v.includes("..") };
+/** An `unattended` rule for a value flag: dropped unless its value is one of `keep`. */
+const unless = (...keep) => (v) => !keep.includes(v);
 
 
 const claudeEnd = (reason) => (reason === "clear" || reason === "resume" ? "ignore" : reason === "other" ? "keep" : "forget");
@@ -43,15 +49,23 @@ const claudeEnd = (reason) => (reason === "clear" || reason === "resume" ? "igno
  *              original command line (a first prompt, `--resume` itself, a
  *              secret) is left behind. The same list filters the flags read
  *              back from the terminal's labels (see `readRecord`).
+ * - `unattended` the carried flags an automatic resume (after a reboot or a
+ *              core restart, with nobody watching) leaves out: the ones that
+ *              lift approvals or the sandbox. `true` drops the flag, a
+ *              function drops it when it returns true for the flag's value.
+ *              A resume the person starts from the dialog keeps them.
  *
  * What is carried and what never is, and why: the flags travel through a
  * terminal label, which anything that can talk to herdr-core can write, and
  * they come back unattended after a reboot.
- * - Permission and sandbox modes are carried as recorded
- *   (`--dangerously-skip-permissions`, `--permission-mode`, Codex's
- *   approval and sandbox flags, `--force`, `--auto-approve`, ...). A label
- *   writer already runs as the person, and a resumed agent waits for input
- *   before it acts: the session comes back the way it ran.
+ * - Permission and sandbox modes that lift approvals or the sandbox
+ *   (`--dangerously-skip-permissions`, `--permission-mode bypassPermissions`,
+ *   Codex's `--yolo` and `-a never`, `--force`, `--auto-approve`, ...) are
+ *   carried only into a resume the person starts from the dialog. An
+ *   automatic resume leaves them out (`unattended`) and says so: a label
+ *   writer may be an agent running under restricted permissions, and a
+ *   bypass written into a label must not come back unrestricted after a
+ *   reboot, with nobody watching it start.
  * - Never carried: flags that make the agent load something it would not
  *   load otherwise, because that runs code or instructions at once on
  *   resume: settings, hooks, extensions, plugins or MCP servers
@@ -97,7 +111,12 @@ export const AGENTS = {
       "--allow-dangerously-skip-permissions": 0,
       "--permission-mode": 1,
       "--model": 1,
-      "--agent": 1,
+      "--agent": AGENT_NAME,
+    },
+    unattended: {
+      "--dangerously-skip-permissions": true,
+      "--allow-dangerously-skip-permissions": true,
+      "--permission-mode": unless("default", "manual", "plan", "dontAsk"),
     },
   },
   codex: {
@@ -124,6 +143,15 @@ export const AGENTS = {
       "--ask-for-approval": 1,
       "-p": NAME,
       "--profile": NAME,
+    },
+    unattended: {
+      "--dangerously-bypass-approvals-and-sandbox": true,
+      "--yolo": true,
+      "--approve-for-me": true,
+      "-a": (v) => v === "never",
+      "--ask-for-approval": (v) => v === "never",
+      "-s": (v) => v === "danger-full-access",
+      "--sandbox": (v) => v === "danger-full-access",
     },
   },
   pi: {
@@ -164,6 +192,7 @@ export const AGENTS = {
       "--no-approve": 0,
       "--offline": 0,
     },
+    unattended: { "-a": true, "--approve": true },
   },
   // oh-my-pi (omp), checked against omp 18.16.0: a fork of pi with its own
   // home (~/.omp/agent) and its own extension folder, and `--resume <id>`
@@ -192,7 +221,7 @@ export const AGENTS = {
       "--thinking": 1,
       "--service-tier": 1,
       "--tools": 1,
-      "--skills": 1,
+      "--skills": NAMES,
       "--no-tools": 0,
       "--no-lsp": 0,
       "--no-pty": 0,
@@ -207,6 +236,9 @@ export const AGENTS = {
       "--auto-approve": 0,
       "--plan-yolo": 0,
     },
+    // --approval-mode's values aren't pinned down here: any of them is left
+    // out, which at worst brings the session back asking more, not less.
+    unattended: { "--approval-mode": true, "--auto-approve": true, "--plan-yolo": true },
   },
   // Factory Droid, checked against droid 1.1.0: `--resume <id>` reopens the
   // same session id; `--fork <id>` opens an interactive copy under a new id; it
@@ -227,6 +259,7 @@ export const AGENTS = {
       "--use-spec": 0,
       "--disable-builtin-skills": 0,
     },
+    unattended: { "--auto": true },
   },
   // Cursor CLI, checked against cursor-agent 2026.10.22: the sessionStart
   // hook's `conversation_id` is the chat id `--resume` takes, and resuming
@@ -268,6 +301,7 @@ export const AGENTS = {
       "--mode": 1,
       "--plan": 0,
     },
+    unattended: { "-f": true, "--force": true, "--yolo": true, "--sandbox": unless("enabled") },
   },
 };
 
@@ -389,6 +423,36 @@ export function safeFlags(key, flags) {
 }
 
 /**
+ * Carried flags split for an automatic resume: `kept` go on the command line,
+ * `dropped` (each a flag with its value, as one string) are the ones the
+ * agent's `unattended` rules leave out. `flags` come from `safeFlags`, so
+ * every value sits right after its flag.
+ */
+export function attendedFlags(key, flags = []) {
+  const agent = AGENTS[key];
+  const carry = agent?.carry ?? {};
+  const rules = agent?.unattended ?? {};
+  const kept = [], dropped = [];
+  for (let i = 0; i < flags.length; i++) {
+    const word = String(flags[i]);
+    const eq = word.startsWith("--") ? word.indexOf("=") : -1;
+    const name = eq > 0 ? word.slice(0, eq) : word;
+    const unit = [word];
+    let value = eq > 0 ? word.slice(eq + 1) : null;
+    if (eq < 0 && own(carry, name)) {
+      const n = arity(carry[name]);
+      if (n === 1 && i + 1 < flags.length) { value = String(flags[++i]); unit.push(value); }
+      if (n === 2) while (i + 1 < flags.length && !String(flags[i + 1]).startsWith("-")) unit.push(String(flags[++i]));
+    }
+    const rule = own(rules, name) ? rules[name] : null;
+    const drop = rule === true || (typeof rule === "function" && rule(value));
+    if (drop) dropped.push(unit.join(" "));
+    else kept.push(...unit);
+  }
+  return { kept, dropped };
+}
+
+/**
  * Whether a hook belongs to the agent in the terminal's foreground (`target`).
  * `table` maps pid → { ppid, argv }; the walk goes up from the hook's parent
  * and must reach `target`. On the way, the agent processes must sit next to
@@ -419,13 +483,15 @@ export const validId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9
 export const shortId = (id) => (id ? String(id).slice(0, 8) : "");
 
 /**
- * The command line that resumes or forks a session.
+ * The command line that resumes or forks a session. `unattended`: for an
+ * automatic resume, without the flags that lift approvals or the sandbox.
  */
-export function command(rec, kind = "resume") {
+export function command(rec, kind = "resume", { unattended = false } = {}) {
   const agent = AGENTS[rec?.agent];
   if (!agent || typeof agent[kind] !== "function" || !validId(rec.session)) return null;
+  const flags = safeFlags(rec.agent, rec.flags ?? []);
   // No variables: a resume runs with the shell's own (see `needs`).
-  return agent[kind](rec.session, safeFlags(rec.agent, rec.flags ?? []));
+  return agent[kind](rec.session, unattended ? attendedFlags(rec.agent, flags).kept : flags);
 }
 
 /**
@@ -599,8 +665,8 @@ export function shouldResume(rec, { pid, since = null, shellPid, env = {} }) {
 }
 
 /** `cd -- <folder> && <agent> … --resume <id>`, one line, or "". */
-export function resumeLine(rec) {
-  const argv = command(rec, "resume");
+export function resumeLine(rec, { unattended = false } = {}) {
+  const argv = command(rec, "resume", { unattended });
   if (!argv) return "";
   return `${rec.cwd ? `cd -- ${shQuote(rec.cwd)} && ` : ""}${shJoin(argv)}`;
 }
@@ -609,12 +675,16 @@ export function resumeLine(rec) {
  * What the recovered shell runs: say what is happening, go back to the
  * session's folder, start the agent, and mark the terminal failed when the
  * agent quits within a few seconds with an error (a session it can't find).
+ * Nobody is watching it start, so the flags that lift approvals or the
+ * sandbox are left out, and the note says which.
  */
 export function resumeScript(rec, engine) {
-  const line = resumeLine(rec);
+  const line = resumeLine(rec, { unattended: true });
   if (!line) return "";
   const name = AGENTS[rec.agent].name;
-  const note = `↻ Revive: resuming ${name} session ${shortId(rec.session)}. REVIVE_AUTO=0 skips this.`;
+  const { dropped } = attendedFlags(rec.agent, safeFlags(rec.agent, rec.flags ?? []));
+  const without = dropped.length ? ` without ${dropped.join(", ")} (quit and resume it from the Revive dialog to keep ${dropped.length > 1 ? "them" : "it"})` : "";
+  const note = `↻ Revive: resuming ${name} session ${shortId(rec.session)}${without}. REVIVE_AUTO=0 skips this.`;
   const body = [
     `  printf '\\033[2m%s\\033[0m\\n' ${shQuote(note)}`,
     `  __revive_t=$SECONDS`,

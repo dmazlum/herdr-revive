@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, symlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -165,6 +165,12 @@ test("the folder a record names is used only as the person's own, real folder", 
   assert.equal(vetRecord(rec, { uid: 999999 }).cwdRefused, rec.cwd, "another user's folder");
   chmodSync(work, 0o777);
   assert.equal(vetRecord(rec).cwdRefused, rec.cwd, "anyone may write there");
+  chmodSync(work, 0o775);
+  const { uid, gid } = statSync(work);
+  assert.equal(vetRecord(rec, { uid, gid: gid + 1 }).cwdRefused, rec.cwd, "another group may write there");
+  // The user's own private group (uid = gid, a Linux umask of 002) may; a
+  // shared primary group (macOS staff) may not.
+  assert.equal(vetRecord(rec, { uid, gid }).cwdRefused, uid === gid ? undefined : rec.cwd);
   chmodSync(work, 0o755);
   assert.equal(shouldResume({ ...readRecord({ "revive.agent": "omp", "revive.session": ID, "revive.shell": "1" }), cwdRefused: true }, { pid: 2, shellPid: 2 }).go, false);
 });

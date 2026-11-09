@@ -5,8 +5,8 @@ import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  agentKey, needsOf, carriedFlags, isOneShot, validId, command, shQuote, shJoin, readRecord, labelArgs, clearArgs,
-  stateOf, shouldResume, resumeScript, ago,
+  AGENTS, agentKey, needsOf, carriedFlags, isOneShot, validId, command, shQuote, shJoin, readRecord, labelArgs, clearArgs,
+  stateOf, shouldResume, resumeScript, attendedFlags, ago,
 } from "../mods/revive/lib/core.js";
 
 const ID = "9e458eb4-72c3-41c2-88bf-2f7f79f3716f";
@@ -274,4 +274,48 @@ test("a record that can't be resumed by hand says why, and what to run", async (
   assert.equal(needsCommand({ agent: "claude", session: ID, cwd: "/w", flags: [], needs: ["CLAUDE_CONFIG_DIR"] }), `cd -- /w && claude --resume ${ID}`);
   assert.equal(needsCommand({ agent: "pi", session: ID, cwd: null, flags: [], needs: ["--session-dir"] }), `pi --session-dir <folder> --session ${ID}`);
   assert.equal(needsCommand({ agent: "nope", session: ID, needs: ["X"] }), null);
+});
+
+test("an automatic resume leaves out the flags that lift approvals or the sandbox", () => {
+  const rec = (agent, flags) => readRecord(labels({ agent, session: ID, flags: JSON.stringify(flags) }));
+  const cases = [
+    ["claude", ["--dangerously-skip-permissions", "--model", "opus"], ["--model", "opus"], ["--dangerously-skip-permissions"]],
+    ["claude", ["--allow-dangerously-skip-permissions"], [], ["--allow-dangerously-skip-permissions"]],
+    ["claude", ["--permission-mode", "bypassPermissions"], [], ["--permission-mode bypassPermissions"]],
+    ["claude", ["--permission-mode=acceptEdits"], [], ["--permission-mode=acceptEdits"]],
+    ["claude", ["--permission-mode", "auto"], [], ["--permission-mode auto"]],
+    ["claude", ["--permission-mode", "plan"], ["--permission-mode", "plan"], []],
+    ["codex", ["--yolo", "-m", "o3"], ["-m", "o3"], ["--yolo"]],
+    ["codex", ["--dangerously-bypass-approvals-and-sandbox"], [], ["--dangerously-bypass-approvals-and-sandbox"]],
+    ["codex", ["-a", "never", "-s", "danger-full-access"], [], ["-a never", "-s danger-full-access"]],
+    ["codex", ["--ask-for-approval=never", "--sandbox=danger-full-access"], [], ["--ask-for-approval=never", "--sandbox=danger-full-access"]],
+    ["codex", ["-a", "on-request", "-s", "workspace-write"], ["-a", "on-request", "-s", "workspace-write"], []],
+    ["cursor", ["--force", "-f", "--yolo", "--sandbox", "disabled", "--model", "gpt-5"], ["--model", "gpt-5"], ["--force", "-f", "--yolo", "--sandbox disabled"]],
+    ["cursor", ["--sandbox", "enabled"], ["--sandbox", "enabled"], []],
+    ["omp", ["--auto-approve", "--plan-yolo", "--approval-mode", "x", "--model", "m"], ["--model", "m"], ["--auto-approve", "--plan-yolo", "--approval-mode x"]],
+    ["droid", ["--auto", "high", "--use-spec"], ["--use-spec"], ["--auto high"]],
+    ["pi", ["-a", "--approve", "--no-approve"], ["--no-approve"], ["-a", "--approve"]],
+  ];
+  for (const [agent, flags, kept, dropped] of cases) {
+    const r = rec(agent, flags);
+    assert.deepEqual(attendedFlags(agent, r.flags), { kept, dropped }, `${agent} ${flags.join(" ")}`);
+    // By hand (the dialog), the session comes back the way it ran; automatically, without them.
+    assert.deepEqual(command(r), AGENTS[agent].resume(ID, flags), `${agent}: kept by hand`);
+    assert.deepEqual(command(r, "resume", { unattended: true }), AGENTS[agent].resume(ID, kept), `${agent}: left out`);
+  }
+  const script = resumeScript(rec("claude", ["--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]), "/e");
+  assert.match(script, /resuming Claude Code session 9e458eb4 without --dangerously-skip-permissions, --permission-mode bypassPermissions \(quit and resume it from the Revive dialog to keep them\)/);
+  assert.match(script, /claude --resume 9e458eb4/);
+  assert.doesNotMatch(resumeScript(rec("claude", ["--model", "opus"]), "/e"), /without/);
+});
+
+test("--agent and omp's --skills take names, not paths", () => {
+  assert.deepEqual(carriedFlags("claude", ["claude", "--agent", "reviewer"]), ["--agent", "reviewer"]);
+  assert.deepEqual(carriedFlags("claude", ["claude", "--agent", "my-plugin:reviewer"]), ["--agent", "my-plugin:reviewer"]);
+  for (const bad of ["../../evil", "/tmp/a.md", "a/b", "a..b", "x y"]) {
+    assert.deepEqual(carriedFlags("claude", ["claude", "--agent", bad]), [], bad);
+    assert.deepEqual(carriedFlags("claude", ["claude", `--agent=${bad}`]), [], bad);
+  }
+  assert.deepEqual(carriedFlags("omp", ["omp", "--skills", "commit,review"]), ["--skills", "commit,review"]);
+  for (const bad of ["anything,../x", "/x", "a,", ",a", "*"]) assert.deepEqual(carriedFlags("omp", ["omp", "--skills", bad]), [], bad);
 });
