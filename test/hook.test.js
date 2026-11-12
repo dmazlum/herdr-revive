@@ -4,7 +4,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -450,6 +451,58 @@ else if (cmd === "label") fs.appendFileSync(${JSON.stringify(join(dir, "label.lo
   assert.match(hinted.labelled, /revive\.failed=\d+/, "said once: the next shell stays quiet");
   const gone = check({ ...rec, "revive.cwd": join(dir, "gone") });
   assert.match(gone.out, /folder is missing or not yours/);
+});
+
+/**
+ * A fake `hc` that only notes each call and the CLAUDE_CODE_* names it got.
+ * A real one with no core running starts one, in the caller's environment.
+ */
+function callLog() {
+  const dir = mkdtempSync(join(tmpdir(), "revive-core-"));
+  const hc = join(dir, "hc");
+  writeFileSync(hc, `#!/usr/bin/env node
+const fs = require("fs");
+const names = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE_CODE_") || k === "CLAUDECODE");
+fs.appendFileSync(${JSON.stringify(join(dir, "calls.log"))}, JSON.stringify({ args: process.argv.slice(2), names }) + "\\n");
+console.log("{}");
+`);
+  chmodSync(hc, 0o755);
+  const calls = () => (existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
+  const hook = (env) => execFileSync("node", [ENGINE, "hook"], {
+    input: JSON.stringify(start),
+    env: { ...base, HC_TERMINAL_ID: "t1", REVIVE_HC: hc, CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1", ...env },
+  });
+  return { dir, calls, hook };
+}
+
+test("a hook that runs while herdr-core is down never calls hc, which would start a core", () => {
+  const { dir, calls, hook } = callLog();
+  hook({ HC_TERMINAL_SOCKET: join(dir, "gone.sock") });
+  assert.deepEqual(calls(), []);
+});
+
+test("a hook with herdr-core up calls hc, without the agent's CLAUDE_CODE_* variables", async () => {
+  const { dir, calls, hook } = callLog();
+  const sock = join(dir, "core.sock");
+  const server = createServer((c) => c.end());
+  await new Promise((ok) => server.listen(sock, ok));
+  try {
+    await new Promise((ok, fail) => {
+      const child = execFile("node", [ENGINE, "hook"], {
+        env: { ...base, HC_TERMINAL_ID: "t1", REVIVE_HC: join(dir, "hc"), HC_TERMINAL_SOCKET: sock, CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1" },
+      }, (err) => (err ? fail(err) : ok()));
+      child.stdin.end(JSON.stringify(start));
+    });
+  } finally { server.close(); }
+  const got = calls();
+  assert.ok(got.length > 0, "the core is up: the hook asks it");
+  assert.deepEqual(got.flatMap((c) => c.names), []);
+  // Without HC_TERMINAL_SOCKET (an older hc), the hook still runs as before.
+  rmSync(join(dir, "calls.log"));
+  const env = { ...base };
+  delete env.HC_TERMINAL_SOCKET;
+  execFileSync("node", [ENGINE, "hook"], { input: JSON.stringify(start), env: { ...env, HC_TERMINAL_ID: "t1", REVIVE_HC: join(dir, "hc") } });
+  assert.ok(calls().length > 0);
 });
 
 /**

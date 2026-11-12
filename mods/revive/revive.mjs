@@ -20,6 +20,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync, copyFileSync, mkdirSync, renameSync, realpathSync, rmSync, statSync, lstatSync, symlinkSync, chmodSync } from "node:fs";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,9 +37,32 @@ const HC = process.env.REVIVE_HC || "hc";
 
 // ── herdr-core ──────────────────────────────────────────────────────────────
 
+/**
+ * The environment `hc` runs in, without the agent's own variables. An `hc`
+ * that finds no core starts one, which keeps the environment it was started
+ * in and hands it to every terminal: CLAUDE_CODE_CHILD_SESSION there makes
+ * each Claude Code after it think it is nested, and it stops saving transcripts.
+ */
+export const hcEnv = (env) => Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("CLAUDE_CODE_") && k !== "CLAUDECODE"));
+
 async function hc(args, env = process.env) {
-  const { stdout } = await run(HC, args, { env, maxBuffer: 8 * 1024 * 1024, timeout: 10_000 });
+  const { stdout } = await run(HC, args, { env: hcEnv(env), maxBuffer: 8 * 1024 * 1024, timeout: 10_000 });
   return stdout;
+}
+
+/**
+ * Whether herdr-core answers on the terminal's socket. An `hc` older than
+ * HC_TERMINAL_SOCKET says nothing: it is taken as up, as before.
+ */
+function coreUp(socket = process.env.HC_TERMINAL_SOCKET) {
+  if (!socket) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const c = createConnection(socket);
+    const done = (ok) => { c.destroy(); resolve(ok); };
+    c.setTimeout(1000, () => done(false));
+    c.once("connect", () => done(true));
+    c.once("error", () => done(false));
+  });
 }
 
 const getTerminal = async (t) => JSON.parse(await hc(["get", t, "--json"]));
@@ -122,6 +146,9 @@ async function hook(args = []) {
   const t = process.env.HC_TERMINAL_ID;
   const { event, session } = payload;
   if (!t || !validId(session)) return;
+  // The agent ends when the core stops, and its SessionEnd comes after: with
+  // no core, there is no label to change, and `hc` would start a new core.
+  if (!(await coreUp())) return;
   const terminal = await getTerminal(t);
   // The hook must belong to the agent in the terminal's foreground, not to a
   // `claude -p` that agent ran as a tool (it inherits HC_TERMINAL_ID too).
