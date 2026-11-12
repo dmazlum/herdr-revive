@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AGENTS, agentKey, needsOf, carriedFlags, isOneShot, validId, command, shQuote, shJoin, readRecord, labelArgs, clearArgs,
-  stateOf, shouldResume, resumeScript, attendedFlags, ago,
+  stateOf, shouldResume, ownShell, isShell, resumeScript, attendedFlags, ago,
 } from "../mods/revive/lib/core.js";
 
 const ID = "9e458eb4-72c3-41c2-88bf-2f7f79f3716f";
@@ -318,4 +318,34 @@ test("--agent and omp's --skills take names, not paths", () => {
   }
   assert.deepEqual(carriedFlags("omp", ["omp", "--skills", "commit,review"]), ["--skills", "commit,review"]);
   for (const bad of ["anything,../x", "/x", "a,", ",a", "*"]) assert.deepEqual(carriedFlags("omp", ["omp", "--skills", bad]), [], bad);
+});
+
+test("a shell is the terminal's own when it is its program, or a wrapper's child", () => {
+  const ps = (rows) => new Map(rows.map(([pid, ppid, ...argv]) => [pid, { ppid, since: "", argv }]));
+  // Kiro CLI: the terminal's program is the pty wrapper; the real shell is its child.
+  const kiro = ps([[36493, 1, "zsh", "(kiro-cli-term)"], [36580, 36493, "/bin/zsh", "--login"]]);
+  assert.equal(ownShell(kiro, 36493, 36493).own, true, "the program itself");
+  assert.equal(ownShell(kiro, 36580, 36493).own, true, "the wrapper's child");
+  // `script` started from a profile: shell → script → the terminal's shell.
+  const script = ps([[10, 1, "-zsh"], [11, 10, "script", "-q", "/dev/null"], [12, 11, "zsh"]]);
+  assert.equal(ownShell(script, 12, 10).own, true);
+  // A shell typed in the terminal's shell, which ran Revive's block and exported its pid.
+  const byHand = ps([[10, 1, "-zsh"], [20, 10, "zsh"]]);
+  assert.equal(ownShell(byHand, 20, 10, "10").own, false);
+  assert.match(ownShell(byHand, 20, 10, "10").why, /inside the terminal's own shell/);
+  // One more level down: the marker is the middle shell's.
+  const deeper = ps([[10, 1, "-zsh"], [20, 10, "zsh"], [30, 20, "bash"]]);
+  assert.equal(ownShell(deeper, 30, 10, "20").own, false);
+  // Another shell on the way, even without a marker.
+  assert.equal(ownShell(deeper, 30, 10).own, false);
+  // A marker a core kept from the shell that started it is not on the way.
+  assert.equal(ownShell(kiro, 36580, 36493, "999").own, true);
+  // Not under the terminal at all, or no terminal pid.
+  assert.equal(ownShell(kiro, 36580, 77).own, false);
+  assert.equal(ownShell(kiro, 36580, null).own, false);
+});
+
+test("shells are recognized by name, login or not", () => {
+  for (const argv of [["zsh"], ["-zsh"], ["/bin/bash", "--login"], ["/usr/local/bin/fish"], ["sh", "-c", "x"]]) assert.equal(isShell(argv), true, argv[0]);
+  for (const argv of [["script"], ["node", "x"], ["claude"], [], undefined]) assert.equal(isShell(argv), false, String(argv?.[0]));
 });

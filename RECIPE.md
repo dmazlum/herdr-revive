@@ -263,10 +263,12 @@ reboot with either agent.
   capitalized (Cursor's `sessionStart`), the id from `session_id` or else
   `conversation_id`, the folder from `cwd` or else `workspace_roots[0]`.
 - The shell block asks `${REVIVE_HC:-hc}` for the terminal and starts node only when its
-  answer has a `revive.session` label and the terminal's `"pid"` is the shell's `$$`. A
-  shell started inside the terminal costs one `hc get`.
+  answer has a `revive.session` label and the shell's parent is not a shell that ran the
+  block (`REVIVE_SHELL`, which the block exports as its `$$`). A shell started by hand
+  inside the terminal's costs one `hc get`.
 - `check` resumes only when all hold: it runs in the terminal's own shell (`$$` is the
-  terminal's pid), the terminal's program is not the remembered one (another pid, or the
+  terminal's pid, or the walk up from `$$` reaches it without passing another shell or
+  `REVIVE_SHELL`: the child of a pty wrapper such as Kiro CLI's), the terminal's program is not the remembered one (another pid, or the
   same pid with another start time), automatic resume is on, the agent and the id are
   valid, the last resume did not fail (`revive.failed` is unset), the folder passed its
   check, every need is met (each variable set in the shell, never `--session-dir`), and

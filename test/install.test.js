@@ -226,17 +226,30 @@ function fakeTools(pid) {
   return { env, started: () => existsSync(join(bin, "node.log")) };
 }
 
-test("the shell block honors REVIVE_HC and starts node only in the terminal's own shell", () => {
+test("the shell block honors REVIVE_HC and doesn't start node in a shell started from one that ran it", () => {
   // `hc` is not on PATH here: only REVIVE_HC can answer.
   const own = fakeTools("SELF");
   // The test's shell tells the fake hc its pid, which is what the real one reports.
   execFileSync("sh", ["-c", `SELF=$$; export SELF\n${shellBlock(ENGINE)}`], { env: own.env });
   assert.ok(own.started(), "the terminal's own shell asks the engine");
 
+  // A shell whose pid isn't the terminal's (a wrapper's child): the engine decides.
+  const child = fakeTools(1);
+  execFileSync("sh", ["-c", shellBlock(ENGINE)], { env: child.env });
+  assert.ok(child.started(), "a shell under a wrapper asks the engine");
+
+  // The test process stands for the shell that ran the block and exported its pid.
   const nested = fakeTools(1);
-  const out = execFileSync("sh", ["-c", `{\n${shellBlock(ENGINE)}\n} 2>&1`], { env: { ...nested.env, REVIVE_DEBUG: "1" }, encoding: "utf8" });
-  assert.ok(!nested.started(), "a shell inside the terminal doesn't start node");
-  assert.match(out, /not the terminal's own shell/);
+  const out = execFileSync("sh", ["-c", `{\n${shellBlock(ENGINE)}\n} 2>&1`], { env: { ...nested.env, REVIVE_SHELL: String(process.pid), REVIVE_DEBUG: "1" }, encoding: "utf8" });
+  assert.ok(!nested.started(), "a shell started by hand inside the terminal's doesn't start node");
+  assert.match(out, /a shell started inside the terminal's own shell/);
+});
+
+test("the shell block exports its pid for the shells started from it", () => {
+  const { env } = fakeTools(1);
+  const out = execFileSync("sh", ["-c", `${shellBlock(ENGINE)}\nprintf '%s %s' "$REVIVE_SHELL" $$`], { env, encoding: "utf8" });
+  const [marker, pid] = out.split(" ");
+  assert.equal(marker, pid);
 });
 
 test("install writes through a symlinked file and keeps its permissions", () => {
