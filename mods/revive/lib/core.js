@@ -14,7 +14,9 @@ export const KEYS = ["agent", "session", "cwd", "flags", "env", "needs", "transc
 /**
  * How an agent's SessionEnd reason is taken: "ignore" (the same process starts
  * another session at once, and its SessionStart records it), "keep" (a signal,
- * a crash: worth bringing back) or "forget" (the person ended it).
+ * a crash: worth bringing back), "forget" (the person ended it) or "settle"
+ * (the reason can't tell those apart: the engine forgets the session only if
+ * the terminal's shell is still alive a moment later, see revive.mjs).
  * Claude Code's reasons, which Codex, Factory Droid and pi's extension share.
  */
 /** A value flag that names one of the person's own profiles, not a path. */
@@ -35,7 +37,7 @@ const claudeEnd = (reason) => (reason === "clear" || reason === "resume" ? "igno
  * - `bin`      the program a resume or fork runs
  * - `bins`     the program names it is known by on a command line (default: `bin`)
  * - `match`    optional: a stricter test of one command-line word, for a name
- *              too generic to trust on its own
+ *              too generic to trust on its own; called as (word, i, argv)
  * - `apps`     the names it reports itself by (OSC 7501 `app`)
  * - `resume`   the command line that resumes a session
  * - `fork`     the one that copies it into a new session, or null when the
@@ -303,13 +305,79 @@ export const AGENTS = {
     },
     unattended: { "-f": true, "--force": true, "--yolo": true, "--sandbox": unless("enabled") },
   },
+  // GitHub Copilot CLI, checked against copilot 1.0.109: hooks in
+  // ~/.copilot/hooks/*.json get SessionStart (at a session's first message,
+  // and again on `--resume`) and SessionEnd with `session_id`; `--resume <id>`
+  // reopens the same session. It has no fork on the command line (`/fork`
+  // inside does). `copilot` counts as the first word, or as the script an
+  // interpreter runs (`node …/bin/copilot`), never as an argument: `gh
+  // copilot` is gh's own command. Extra folders, MCP configs, plugins and
+  // sharing (`--add-dir`, `--additional-mcp-config`, `--plugin-dir`,
+  // `--enable-mcp-server`, `--share…`) are never carried.
+  copilot: {
+    name: "Copilot CLI",
+    bin: "copilot",
+    match: (word, i = 0, argv = []) => base(word) === "copilot" && (i === 0 || ["node", "bun", "deno"].includes(base(argv[0]))),
+    apps: ["copilot", "copilot-cli", "github-copilot"],
+    resume: (id, flags) => ["copilot", ...flags, "--resume", id],
+    fork: null,
+    // complete: a `-p` run finished. user_exit is sent for /exit and Ctrl+C,
+    // but also for SIGTERM and SIGHUP (a core restart, a reboot), so it is
+    // settled by whether the terminal outlived it. abort, error, timeout: kept.
+    end: (reason) => (reason === "complete" ? "forget" : reason === "user_exit" ? "settle" : "keep"),
+    env: ["COPILOT_HOME"],
+    oneShot: (args) => args.some((w) => w === "-p" || w === "--prompt" || w.startsWith("--prompt=") || w === "--acp" || w === "--connect" || w.startsWith("--connect="))
+      || COPILOT_COMMANDS.has(args[0]),
+    carry: {
+      "--plan": 0,
+      "--autopilot": 0,
+      "--allow-all": 0,
+      "--yolo": 0,
+      "--allow-all-tools": 0,
+      "--allow-all-paths": 0,
+      "--allow-all-urls": 0,
+      "--allow-tool": 2,
+      "--deny-tool": 2,
+      "--allow-url": 2,
+      "--deny-url": 2,
+      "--available-tools": 2,
+      "--excluded-tools": 2,
+      "--no-ask-user": 0,
+      "--experimental": 0,
+      "--no-experimental": 0,
+      "--disable-builtin-mcps": 0,
+      "--disable-mcp-server": 1,
+      "--no-custom-instructions": 0,
+      "--disallow-temp-dir": 0,
+      "--screen-reader": 0,
+      "--plain-diff": 0,
+      "--no-mouse": 0,
+      "--model": 1,
+      "--mode": 1,
+      "--reasoning-effort": 1,
+      "--max-autopilot-continues": 1,
+      "--agent": AGENT_NAME,
+    },
+    unattended: {
+      "--allow-all": true,
+      "--yolo": true,
+      "--allow-all-tools": true,
+      "--allow-all-paths": true,
+      "--allow-all-urls": true,
+      "--allow-tool": true,
+      "--allow-url": true,
+    },
+  },
 };
+
+/** Copilot CLI's subcommands: each runs once and quits, with no session to resume. */
+const COPILOT_COMMANDS = new Set(["login", "logout", "help", "init", "config", "update", "version", "workflow", "sessions", "memories", "plugin", "mcp", "skill", "instruction", "lsp", "sandbox", "completion", "app"]);
 
 const base = (path) => String(path ?? "").split("/").pop();
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 /** Whether one command-line word is this agent's program. */
-const isBin = (agent, word) => (agent.match ? agent.match(word) : (agent.bins ?? [agent.bin]).includes(base(word)));
+const isBin = (agent, word, i = 0, argv = []) => (agent.match ? agent.match(word, i, argv) : (agent.bins ?? [agent.bin]).includes(base(word)));
 
 /** The agent behind an OSC 7501 report (`claude-code`) or a command line, or null. */
 export function agentKey(app, argv = []) {
@@ -319,7 +387,7 @@ export function agentKey(app, argv = []) {
   // `claude …`, or a script run by its interpreter: `node …/bin/codex …`.
   for (const [i, word] of argv.slice(0, 2).entries()) {
     for (const [key, agent] of Object.entries(AGENTS)) {
-      if (isBin(agent, word) && !(i > 0 && agent.argv0Only)) return key;
+      if (isBin(agent, word, i, argv) && !(i > 0 && agent.argv0Only)) return key;
     }
   }
   return null;
@@ -328,7 +396,7 @@ export function agentKey(app, argv = []) {
 /** Whether the agent can copy a session into a new one. */
 export const canFork = (key) => typeof AGENTS[key]?.fork === "function";
 
-/** What a SessionEnd with this reason means for the record: "ignore", "keep" or "forget". */
+/** What a SessionEnd with this reason means for the record: "ignore", "keep", "forget" or "settle". */
 export const endAction = (key, reason) => (AGENTS[key]?.end ?? claudeEnd)(reason);
 
 /**
@@ -366,7 +434,7 @@ function payloadAgent(p) {
 
 /** Where the agent's own words start: after its program's name, else after the first word. */
 const argsStart = (key, argv) => {
-  const start = argv.findIndex((word) => isBin(AGENTS[key], word));
+  const start = argv.findIndex((word, i) => isBin(AGENTS[key], word, i, argv));
   return start < 0 ? 1 : start + 1;
 };
 

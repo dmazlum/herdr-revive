@@ -42,6 +42,18 @@ test("Claude Code's session is read from its pid file", () => {
   assert.equal(findSession("claude", { dirs, pid: 1 }), null);
 });
 
+test("Copilot CLI's session is the one its process holds a lock in", () => {
+  const h = home();
+  for (const [id, pid] of [[A, 4242], [B, 77]]) {
+    mkdirSync(join(h, ".copilot", "session-state", id), { recursive: true });
+    writeFileSync(join(h, ".copilot", "session-state", id, `inuse.${pid}.lock`), "");
+  }
+  const dirs = agentDirs({ HOME: h });
+  assert.equal(findSession("copilot", { dirs, pid: 4242 }), A);
+  assert.equal(findSession("copilot", { dirs, pid: 1 }), null);
+  assert.equal(agentDirs({ HOME: h, COPILOT_HOME: "/c" }).copilot, "/c");
+});
+
 test("droid: the newest session file for the folder written since the agent started", () => {
   const h = home();
   const dirs = agentDirs({ HOME: h });
