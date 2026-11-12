@@ -249,7 +249,9 @@ changes nothing when they already are.
    keeps it.
 3. **Resume.** After a reboot or a core restart, herdr-core gives the terminal a new shell.
    Its rc file checks, without starting anything, that a session is remembered and that it
-   is the terminal's own shell, then asks `revive.mjs check`. A terminal whose program is
+   wasn't started by hand from another shell, then asks `revive.mjs check`. The terminal's
+   own shell is its program, or the shell a wrapper runs as its child (Kiro CLI's or
+   Amazon Q's pty wrapper, `script`). A terminal whose program is
    no longer the remembered one (by pid and start time, since pids start over after a
    reboot) lost its agent, so `check` prints the commands that resume the session. The
    shell runs them at its first prompt, once its rc files are done, and hands the agent

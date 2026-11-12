@@ -477,6 +477,36 @@ export function hookOwner(table, start, target) {
   return { owned: false, agent: first };
 }
 
+const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "yash", "csh", "tcsh", "nu", "elvish", "xonsh"]);
+/** Whether a command line is a shell's: `zsh`, `-zsh` (a login shell), `/bin/bash --login`. */
+export const isShell = (argv) => SHELLS.has(String(argv?.[0] ?? "").replace(/^-/, "").split("/").pop());
+
+/**
+ * Whether the shell `shellPid` is the terminal's own: the terminal's program
+ * itself, or a shell that program runs as its child instead of `exec`ing it
+ * (Kiro CLI's and Amazon Q's pty wrapper, `script`, a recorder started from
+ * a profile). The walk goes up from the shell and must reach `terminalPid`
+ * without passing another shell. `marker` is REVIVE_SHELL, the pid of a shell
+ * that ran Revive's block and exported it: on the way up, it is a shell
+ * started by hand inside the terminal's own one. A marker that isn't on the
+ * way (one a core kept from the shell that started it) is ignored.
+ */
+export function ownShell(table, shellPid, terminalPid, marker = null) {
+  if (!terminalPid) return { own: false, why: "not the terminal's own shell" };
+  if (shellPid === terminalPid) return { own: true };
+  const outer = Number(marker) || null;
+  let pid = table.get(shellPid)?.ppid;
+  for (let hops = 0; pid > 1 && hops < 64; hops++) {
+    if (pid === outer) return { own: false, why: "a shell started inside the terminal's own shell" };
+    if (pid === terminalPid) return { own: true };
+    const proc = table.get(pid);
+    if (!proc) break;
+    if (isShell(proc.argv)) return { own: false, why: "a shell started inside another shell" };
+    pid = proc.ppid;
+  }
+  return { own: false, why: "not the terminal's own shell" };
+}
+
 /** Session ids are UUIDs (Droid's docs show `session-abc123`); anything else is refused rather than quoted. */
 export const validId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
 

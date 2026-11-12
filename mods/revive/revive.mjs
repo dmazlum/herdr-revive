@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   AGENTS, agentKey, carriedFlags, hookOwner, hookPayload, endAction, isOneShot, readRecord, labelArgs, clearArgs, resumedArgs,
-  stateOf, shouldResume, resumeScript, resumeLine, shQuote, validId, needsOf, shortId, needsHint, unresumable,
+  stateOf, shouldResume, ownShell, resumeScript, resumeLine, shQuote, validId, needsOf, shortId, needsHint, unresumable,
 } from "./lib/core.js";
 import { agentDirs, findSession } from "./lib/sessions.js";
 
@@ -265,10 +265,20 @@ async function check(args) {
   const terminal = await getTerminal(t);
   const rec = loadRecord(terminal.labels);
   const debug = (why) => { if (process.env.REVIVE_DEBUG) process.stderr.write(`revive: ${why}\n`); };
-  // A shell started inside the terminal is the common case and needs no ps.
+  // The terminal's own shell is the common case and needs no ps. A shell a
+  // wrapper runs as its child is the terminal's too (ownShell).
   const pid = terminal.pid ?? null;
-  const since = pid !== null && shellPid === pid ? await startOf(pid) : null;
-  const verdict = shouldResume(rec, { pid, since, shellPid, env: process.env });
+  let own = pid !== null && shellPid === pid, since = null;
+  if (own) since = await startOf(pid);
+  else if (rec && pid !== null) {
+    const table = await processes();
+    const verdict = ownShell(table, shellPid, pid, process.env.REVIVE_SHELL);
+    if (!verdict.own) { debug(verdict.why); return; }
+    own = true;
+    since = table.get(pid)?.since ?? null;
+  }
+  // shouldResume asks whether the shell is the terminal's: it is, when `own`.
+  const verdict = shouldResume(rec, { pid, since, shellPid: own ? pid : shellPid, env: process.env });
   debug(verdict.why);
   if (!verdict.go && verdict.hint) {
     // Said once: marked failed, the next shell stays quiet; the dialog offers it by hand.
@@ -497,13 +507,14 @@ export function shellBlock(engine = ENGINE) {
     `if [ -n "$HC_TERMINAL_ID" ] && [ -f ${q} ] && command -v node >/dev/null 2>&1; then`,
     `  __revive_j="$("\${REVIVE_HC:-hc}" get "$HC_TERMINAL_ID" --json 2>/dev/null)"`,
     // Two cheap tests before starting node: a session is remembered here, and
-    // this is the terminal's own shell (its pid), not one started inside it.
+    // this shell wasn't started by hand from one that ran this block (its
+    // REVIVE_SHELL). Whether it is the terminal's own (its program, or the
+    // shell a wrapper runs as its child), `check` decides from the processes.
     `  case "$__revive_j" in *'"revive.session"'*) __revive_has=1 ;; *) __revive_has= ;; esac`,
-    `  case "$__revive_j" in *'"pid":'"$$"','*|*'"pid": '"$$"','*) __revive_own=1 ;; *) __revive_own= ;; esac`,
     `  if [ -z "$__revive_has" ]; then`,
     `    if [ -n "$REVIVE_DEBUG" ]; then echo "revive: nothing remembered on $HC_TERMINAL_ID" >&2; fi`,
-    `  elif [ -z "$__revive_own" ]; then`,
-    `    if [ -n "$REVIVE_DEBUG" ]; then echo "revive: not the terminal's own shell" >&2; fi`,
+    `  elif [ "$REVIVE_SHELL" = "$PPID" ]; then`,
+    `    if [ -n "$REVIVE_DEBUG" ]; then echo "revive: a shell started inside the terminal's own shell" >&2; fi`,
     `  else`,
     `    if [ -n "$REVIVE_DEBUG" ]; then __revive="$(node ${q} check --shell $$)"`,
     `    else __revive="$(node ${q} check --shell $$ 2>/dev/null)"; fi`,
@@ -519,7 +530,9 @@ export function shellBlock(engine = ENGINE) {
     `      PROMPT_COMMAND="__revive_run;\${PROMPT_COMMAND}"`,
     `    else eval "$__revive"; unset __revive; fi`,
     `  fi`,
-    `  unset __revive_j __revive_has __revive_own`,
+    `  unset __revive_j __revive_has`,
+    // Shells started from this one know it ran here (see ownShell).
+    `  REVIVE_SHELL=$$; export REVIVE_SHELL`,
     `fi`,
     END,
   ].join("\n");

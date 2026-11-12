@@ -504,3 +504,35 @@ test("a hook with herdr-core up calls hc, without the agent's CLAUDE_CODE_* vari
   execFileSync("node", [ENGINE, "hook"], { input: JSON.stringify(start), env: { ...env, HC_TERMINAL_ID: "t1", REVIVE_HC: join(dir, "hc") } });
   assert.ok(calls().length > 0);
 });
+
+/**
+ * A terminal whose program is a wrapper (Kiro CLI's pty wrapper, `script`)
+ * that runs the shell as its child: `check` runs in that shell, and the fake
+ * hc reports the wrapper's pid as the terminal's.
+ */
+function wrapped({ marked = false } = {}) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "revive-wrap-")));
+  writeFileSync(join(dir, "hc"), `#!/usr/bin/env node
+const [cmd, t] = process.argv.slice(2);
+if (cmd === "get") console.log(JSON.stringify({ address: t, state: "live", pid: Number(process.env.WRAP),
+  labels: { "revive.agent": "codex", "revive.session": ${JSON.stringify(ID)}, "revive.shell": "1", "revive.cwd": ${JSON.stringify(dir)} } }));
+`);
+  chmodSync(join(dir, "hc"), 0o755);
+  // The wrapper, then the shell it starts. `marked`: the wrapper is itself a
+  // shell that ran Revive's block, and the inner one was started by hand.
+  writeFileSync(join(dir, "wrap"), `#!/bin/sh
+WRAP=$$; export WRAP
+${marked ? "REVIVE_SHELL=$$; export REVIVE_SHELL" : "unset REVIVE_SHELL"}
+sh -c 'node ${ENGINE} check --shell $$; true'
+`);
+  chmodSync(join(dir, "wrap"), 0o755);
+  return execFileSync(join(dir, "wrap"), [], { encoding: "utf8", env: { ...base, REVIVE_HC: join(dir, "hc"), HC_TERMINAL_ID: "t1", REVIVE_DEBUG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+test("a shell a wrapper runs as its child is the terminal's own, and resumes", () => {
+  assert.match(wrapped(), new RegExp(`codex resume ${ID}`));
+});
+
+test("a shell started by hand inside the terminal's own shell doesn't resume", () => {
+  assert.equal(wrapped({ marked: true }), "");
+});
