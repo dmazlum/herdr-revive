@@ -252,7 +252,7 @@ async function outlived(t, pid, session) {
   if (!(await coreUp())) return false;
   const now = await getTerminal(t).catch(() => null);
   if (!now || now.state !== "live" || !pid || now.pid !== pid || !alive(now.pid)) return false;
-  return readRecord(now.labels)?.session === session;
+  return liveAgent(now) !== "copilot" && readRecord(now.labels)?.session === session;
 }
 
 // ── records read back ───────────────────────────────────────────────────────
