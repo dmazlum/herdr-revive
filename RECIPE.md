@@ -3,8 +3,9 @@
 Revive brings back the coding agent a Herdr terminal lost to a reboot or a herdr-core
 restart, in the same pane, with the same session and flags. It also forks the focused
 agent's conversation into a new session beside it. Agents: Claude Code, Codex, pi,
-oh-my-pi (`omp`), Factory Droid (`droid`) and the Cursor CLI (`cursor-agent`); Droid and
-Cursor are built from their docs and not tested end to end yet.
+oh-my-pi (`omp`), Factory Droid (`droid`), the Cursor CLI (`cursor-agent`) and GitHub
+Copilot CLI (`copilot`); Droid, Cursor and Copilot CLI are not tested end to end with a
+real reboot yet.
 
 ## Installing it (for the agent doing it)
 
@@ -19,7 +20,9 @@ Cursor are built from their docs and not tested end to end yet.
    `~/.factory/hooks.json` if it exists, else `~/.factory/settings.json` (only if
    `~/.factory` exists and the `droid` CLI is on `PATH` or in `~/.local/bin`),
    `~/.cursor/hooks.json` (only if `cursor-agent` is on `PATH`, in `~/.local/bin`, or
-   `~/.local/share/cursor-agent` exists; `~/.cursor` alone is the editor's), links
+   `~/.local/share/cursor-agent` exists; `~/.cursor` alone is the editor's), creates
+   `~/.copilot/hooks/herdr-revive.json` (only if `~/.copilot` or `COPILOT_HOME` exists and
+   `copilot` is on `PATH`, in `~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`), links
    `~/.pi/agent/extensions/herdr-revive.ts` to `mods/revive/pi/revive.ts` (only if
    `~/.pi/agent` exists), links `~/.omp/agent/extensions/herdr-revive.ts` to
    `mods/revive/omp/revive.ts` (only if `~/.omp/agent` exists) and the file their shell
@@ -27,7 +30,7 @@ Cursor are built from their docs and not tested end to end yet.
    `~/.bash_login`, `~/.profile`, on Linux `~/.bashrc`), keeping the original of each as
    `.revive-backup`. Only one bash file keeps the block: an older one in another of them
    (a Linux login file, from an earlier version) is taken out. If they use both zsh and bash, add
-   `--zsh --bash`; `--no-codex`, `--no-pi`, `--no-omp`, `--no-droid`, `--no-cursor` skip
+   `--zsh --bash`; `--no-codex`, `--no-pi`, `--no-omp`, `--no-droid`, `--no-cursor`, `--no-copilot` skip
    an agent. pi loads its extension the next time it starts or at `/reload`, omp only
    the next time it starts.
 6. Run `node ~/.config/herdr-app/mods/revive/revive.mjs doctor` and report what it shows.
@@ -104,7 +107,7 @@ A session is remembered as labels on its herdr-core terminal:
 
 | Label | Value |
 | --- | --- |
-| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid` or `cursor` |
+| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid`, `cursor` or `copilot` |
 | `revive.session` | The session id |
 | `revive.cwd` | The folder the session ran in |
 | `revive.flags` | The carried launch flags, as a JSON array |
@@ -138,6 +141,7 @@ One entry each in `AGENTS` (`lib/core.js`), one hook target in `HOOK_TARGETS`
 | omp | `omp` as the first word only (omp renames its process `omp`); report `omp`, `oh-my-pi` | `omp … --resume <id>` | `omp … --fork <id>` | extension linked into `~/.omp/agent/extensions/` (always that folder: a `PI_CODING_AGENT_DIR` is taken to be pi's) | `session_id` from the extension | `--model`, `--smol`, `--slow`, `--plan`, `--provider`, `--models`, `--thinking`, `--service-tier`, `--tools`, `--skills`, `--no-tools`, `--no-lsp`, `--no-pty`, `--no-extensions`, `--no-skills`, `--no-rules`, `--no-context-files`, `--no-title`, `--hide-thinking`, `--profile` (a name only), `--approval-mode`, `--auto-approve`, `--plan-yolo` |
 | Droid | `droid`; report `droid` | `droid … --resume <id>` | `droid … --fork <id>` | `~/.factory/hooks.json` (event map, no `hooks` wrapper) if it exists, else `hooks` in `~/.factory/settings.json`; command `… hook --agent droid` | `session_id` | `--auto`, `--use-spec`, `--disable-builtin-skills` (interactive flags only: `--skip-permissions-unsafe`, `-m` and the reasoning/tool flags are `droid exec` only, and interactive droid reads them as the prompt) |
 | Cursor | `cursor-agent`, or `agent`/`node`/`index.js` under a `cursor` or `cursor-agent` folder; report `cursor`, `cursor-agent` | `cursor-agent … --resume <id>` | none | `~/.cursor/hooks.json`: `{"version": 1, "hooks": {"sessionStart": [{"command": …}], "sessionEnd": […]}}`, no timeout; command `… hook --agent cursor` | `conversation_id`; folder from `workspace_roots[0]` | `-f`/`--force`, `--yolo`, `--model` (it has no `-m`), `--sandbox`, `--mode`, `--plan` |
+| Copilot CLI | `copilot` as the first word, or the second after `node`/`bun`/`deno` (never `gh copilot`); report `copilot` | `copilot … --resume <id>` | none (`/fork` inside only) | its own file `~/.copilot/hooks/herdr-revive.json` (`$COPILOT_HOME/hooks/`): `{"version": 1, "hooks": {"SessionStart": [{"type": "command", "bash": …, "timeoutSec": 10}], "SessionEnd": […]}}`, deleted whole on uninstall; command `… hook --agent copilot` | `session_id` | `--model`, `--mode`, `--plan`, `--autopilot`, `--reasoning-effort`, `--max-autopilot-continues`, `--agent` (a name only), `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--deny-tool`, `--allow-url`, `--deny-url`, `--available-tools`, `--excluded-tools`, `--no-ask-user`, `--experimental`, `--no-experimental`, `--disable-builtin-mcps`, `--disable-mcp-server`, `--no-custom-instructions`, `--disallow-temp-dir`, `--screen-reader`, `--plain-diff`, `--no-mouse` |
 
 Everything else on the command line is left behind: a first prompt, `--resume` itself,
 a secret (`--api-key`, Cursor's `-H`). A value flag whose value is missing, looks like
@@ -187,7 +191,8 @@ A running agent nobody recorded is found from its files: Claude Code by
 `~/.claude/sessions/<pid>.json`; Droid by the newest `<id>.jsonl` in
 `~/.factory/sessions/<cwd, every non-alphanumeric a dash>/` written since the agent started;
 Cursor by the newest `<id>/` (folder or its `store.db`) in `~/.cursor/chats/<md5 of the
-cwd>/` written since then. Codex, pi and omp: not found.
+cwd>/` written since then; Copilot CLI by the `~/.copilot/session-state/<id>/` that holds
+`inuse.<its pid>.lock`. Codex, pi and omp: not found.
 
 Checked by hand with droid 1.1.0 and cursor-agent 2026.10.22 on macOS: Droid reports
 `droid` to Herdr; its SessionStart hook records the session and its flags; `droid --auto
@@ -199,6 +204,19 @@ terminal carries it to the next restart. Both session-file layouts above match. 
 checked yet: Cursor's `sessionEnd` reasons for `/exit`, Ctrl+C and a shutdown, and a real
 reboot with either agent.
 
+Checked by hand with copilot 1.0.109 on macOS: Copilot reports `copilot` to Herdr; hooks
+in `~/.copilot/hooks/*.json` run with the `copilot` process as their parent; `SessionStart`
+fires at a session's first message (`source: "new"`) and again on `--resume`
+(`source: "resume"`), with `session_id` and `cwd`; `copilot --resume <id>` reopens it, and
+an unknown id exits 1 at once. `SessionEnd` sends `complete` for a `-p` run and
+`user_exit` for `/exit`, Ctrl+C, `/clear`, SIGTERM and SIGHUP alike. `user_exit` is
+therefore settled (`end` returns `"settle"`). Copilot exits right after the hook and
+takes it down, so the hook starts `revive.mjs settle <terminal> <session> <shell pid>` in a
+session of its own and returns. After `REVIVE_SETTLE_MS` (1500), the session
+is forgotten only if herdr-core is up, the terminal is live with the same program pid,
+that process is alive, and the record still names the session; any doubt keeps it.
+`abort`, `error` and `timeout` keep it.
+
 ## Rules
 
 - A hook acts only for the agent in its terminal's foreground: walking up from the hook's
@@ -209,7 +227,8 @@ reboot with either agent.
   inherits `HC_TERMINAL_ID`, but its hooks record nothing.
 - A one-shot run in the foreground (`claude -p`/`--print`, `codex exec`/`e`, `pi -p`,
   `pi --mode json|rpc`, `pi --no-session`, `omp -p`/`--print`, `omp --mode json|rpc|rpc-ui`,
-  `omp --no-session`, `omp --export…`, `droid exec`, `cursor-agent -p`/`--print`)
+  `omp --no-session`, `omp --export…`, `droid exec`, `cursor-agent -p`/`--print`,
+  `copilot -p`/`--prompt`/`--acp`/`--connect` and its subcommands such as `copilot login`)
   records nothing: it fires `SessionStart` and
   ends with reason `other`, so it would replace the interactive session on record and be
   resumed after the next restart.
@@ -306,7 +325,7 @@ reboot with either agent.
   foreground is the terminal's own shell, never into another running program.
 - Fork opens `terminal.open {argv, folder, place}` with the agent's fork command:
   `claude … --resume <id> --fork-session`, `codex fork … <id>`, `pi … --fork <id>`,
-  `omp … --fork <id>`, `droid … --fork <id>`. An agent with no fork (Cursor) gets no fork buttons or keys.
+  `omp … --fork <id>`, `droid … --fork <id>`. An agent with no fork (Cursor, Copilot CLI) gets no fork buttons or keys.
 - pi's and omp's transcript check is the recorded session file: it exists, or the session never got
   a message. A record without one is let through.
 - Install writes an agent's hooks only into the file it reads now, and takes Revive's
@@ -325,7 +344,8 @@ reboot with either agent.
 | `REVIVE_DEBUG=1` | The shell block says why it did or didn't resume, on stderr |
 | `REVIVE_HC` | The `hc` binary the engine and the shell block use (default: `hc` on PATH) |
 | `REVIVE_TTY` | The device the resume runs on, instead of the terminal's (for tests) |
-| `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `ZDOTDIR` | Honored when finding the files to install into; a session's own `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`PI_CODING_AGENT_DIR`/`PI_CODING_AGENT_SESSION_DIR` is recorded by name only, as a need. Without `ZDOTDIR` in the environment, `zsh -c` is asked for it (it reads `~/.zshenv`). omp, Droid and Cursor: always `~/.omp/agent`, `~/.factory` and `~/.cursor` |
+| `REVIVE_SETTLE_MS` | How long Copilot CLI's `user_exit` waits before checking whether the terminal outlived it (default 1500) |
+| `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `ZDOTDIR` | Honored when finding the files to install into; a session's own `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`PI_CODING_AGENT_DIR`/`PI_CODING_AGENT_SESSION_DIR` is recorded by name only, as a need. Without `ZDOTDIR` in the environment, `zsh -c` is asked for it (it reads `~/.zshenv`). omp, Droid and Cursor: always `~/.omp/agent`, `~/.factory` and `~/.cursor`. Copilot CLI: `COPILOT_HOME`, else `~/.copilot`; a session's own `COPILOT_HOME` is a need |
 
 Install writes through symlinks to the file they point at, keeps each file's permissions,
 and copies the original to `<file>.revive-backup` only the first time. A settings file

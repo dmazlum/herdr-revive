@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,7 +25,7 @@ const fs = require("fs"), dir = ${JSON.stringify(dir)};
 const [cmd, t, ...rest] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
 if (cmd === "get") {
-  console.log(JSON.stringify({ address: t, state: "live", pid: 4242, cwd: "/w", labels: state.labels,
+  console.log(JSON.stringify({ address: t, state: "live", pid: Number(process.env.FAKE_PID) || 4242, cwd: "/w", labels: state.labels,
     status: state.app ? { app: state.app, state: "working" } : null,
     foreground: { pid: Number(process.env.FAKE_FG), argv: state.argv, cwd: "/w" } }));
 } else if (cmd === "label") {
@@ -62,6 +62,7 @@ delete base.CLAUDE_CONFIG_DIR;
 delete base.CODEX_HOME;
 delete base.PI_CODING_AGENT_DIR;
 delete base.PI_CODING_AGENT_SESSION_DIR;
+delete base.COPILOT_HOME;
 
 const remembered = { "revive.agent": "claude", "revive.session": ID, "revive.shell": "4242" };
 
@@ -406,6 +407,74 @@ test("Cursor's completed session is forgotten; an aborted one is kept", () => {
   const aborted = setup({ ...cursor, labels: { ...remembered, "revive.agent": "cursor" } });
   aborted.run(cursorEnd("aborted"));
   assert.deepEqual(aborted.calls(), []);
+});
+
+// ── Copilot CLI ─────────────────────────────────────────────────────────────
+
+const copilot = { bin: "copilot", argv: ["copilot", "--model", "gpt-5", "--allow-all-tools", "--add-dir", "/x", "-i", "fix it"] };
+const copilotRec = { ...remembered, "revive.agent": "copilot" };
+// Copilot's user_exit is settled by whether the terminal's shell outlived it.
+const settle = (shellPid) => ({ env: { REVIVE_SETTLE_MS: "0", FAKE_PID: String(shellPid) } });
+const deadPid = () => spawnSync("true").pid;
+
+test("Copilot CLI's SessionStart is remembered, with its flags", () => {
+  const { run, calls, set } = setup(copilot);
+  run({ ...start, timestamp: "2026-11-12T16:27:10.315Z", source: "new", initial_prompt: "fix it" });
+  const got = set(calls());
+  assert.equal(got["revive.agent"], "copilot");
+  assert.equal(got["revive.session"], ID);
+  assert.equal(got["revive.flags"], '["--model","gpt-5","--allow-all-tools"]');
+});
+
+test("`copilot -p` records nothing; `gh copilot` is not Copilot CLI", () => {
+  const once = setup({ ...copilot, argv: ["copilot", "-p", "summarize"] });
+  once.run(start);
+  assert.deepEqual(once.calls(), []);
+  const gh = setup({ bin: "gh", argv: ["gh", "copilot", "suggest"] });
+  gh.run(start);
+  assert.deepEqual(gh.calls(), []);
+});
+
+test("Copilot's user_exit is forgotten while the terminal's shell lives on, kept when it died with it", () => {
+  const exit = setup({ ...copilot, labels: copilotRec });
+  exit.run(end("user_exit"), settle(process.pid));
+  assert.equal(exit.set(exit.calls())["revive.session"], "");
+  const hangup = setup({ ...copilot, labels: copilotRec });
+  hangup.run(end("user_exit"), settle(deadPid()));
+  assert.deepEqual(hangup.calls(), []);
+});
+
+test("Copilot's user_exit is settled after the hook returns, by a process the agent's exit can't take down", async () => {
+  const exit = setup({ ...copilot, labels: copilotRec });
+  exit.run(end("user_exit"), { env: { REVIVE_SETTLE_MS: "300", FAKE_PID: String(process.pid) } });
+  assert.deepEqual(exit.calls(), []);
+  for (let i = 0; i < 100 && !exit.calls().length; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(exit.set(exit.calls())["revive.session"], "");
+});
+
+test("Copilot's completed run is forgotten; an aborted one is kept", () => {
+  const done = setup({ ...copilot, labels: copilotRec });
+  done.run(end("complete"));
+  assert.equal(done.set(done.calls())["revive.session"], "");
+  for (const reason of ["abort", "error", "timeout"]) {
+    const kept = setup({ ...copilot, labels: copilotRec });
+    kept.run(end(reason), settle(process.pid));
+    assert.deepEqual(kept.calls(), [], reason);
+  }
+});
+
+test("a Copilot session is resumable once its session-state folder exists", () => {
+  const home = mkdtempSync(join(tmpdir(), "revive-copilot-"));
+  const before = process.env.COPILOT_HOME;
+  process.env.COPILOT_HOME = home;
+  try {
+    assert.equal(hasTranscript({ agent: "copilot", session: ID }), false);
+    mkdirSync(join(home, "session-state", ID), { recursive: true });
+    assert.equal(hasTranscript({ agent: "copilot", session: ID }), true);
+  } finally {
+    if (before === undefined) delete process.env.COPILOT_HOME;
+    else process.env.COPILOT_HOME = before;
+  }
 });
 
 test("omp's SessionStart is remembered with the command line its extension sends", () => {

@@ -9,7 +9,7 @@
 // revive.mjs, and optionally a finder below.
 
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { validId } from "./core.js";
 
@@ -20,6 +20,7 @@ export function agentDirs(env = process.env) {
     claude: env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
     factory: join(home, ".factory"),
     cursor: join(home, ".cursor"),
+    copilot: env.COPILOT_HOME || join(home, ".copilot"),
   };
 }
 
@@ -68,6 +69,15 @@ const FINDERS = {
     if (!dir) return null;
     const files = list(dir).filter((f) => f.endsWith(".jsonl"));
     return newest(files.map((f) => [f.slice(0, -".jsonl".length), mtime(join(dir, f))]), startedMs);
+  },
+  /**
+   * Copilot CLI holds `session-state/<id>/inuse.<pid>.lock` while a process
+   * has the session open (checked with copilot 1.0.109 on macOS).
+   */
+  copilot: ({ dirs, pid }) => {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    const root = join(dirs.copilot, "session-state");
+    return list(root).find((id) => validId(id) && existsSync(join(root, id, `inuse.${pid}.lock`))) ?? null;
   },
   // A chat's folder is made once; its store.db is written as the chat goes on.
   cursor: ({ dirs, cwd, startedMs }) => {

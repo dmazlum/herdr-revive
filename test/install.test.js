@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, symlinkSync, lstatSync, statSync, realpathSync, copyFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { withHooks, hasHooks, withShellBlock, shellBlock, withCursorHooks, hasCursorHooks, engineWord } from "../mods/revive/revive.mjs";
+import { withHooks, hasHooks, withShellBlock, shellBlock, withCursorHooks, hasCursorHooks, withCopilotHooks, hasCopilotHooks, engineWord } from "../mods/revive/revive.mjs";
 
 const ENGINE = resolve("mods/revive/revive.mjs");
 const theirs = { type: "command", command: "~/bin/notify.sh" };
@@ -372,7 +372,7 @@ const fakeCli = (dir, name) => {
 // A temporary home. `factory` and `cursor` make the agents' folders; `droid`
 // and `cursorAgent` put their CLIs on a PATH that has nothing else of the
 // machine's, so a real droid or cursor-agent can't leak in.
-const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgent = cursor } = {}) => {
+const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgent = cursor, copilot = false, copilotCli = copilot } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "revive-home-"));
   const bin = join(home, "bin");
   mkdirSync(join(home, ".claude"));
@@ -381,8 +381,10 @@ const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgen
   if (cursor) mkdirSync(join(home, ".cursor"));
   if (droid) fakeCli(bin, "droid");
   if (cursorAgent) fakeCli(bin, "cursor-agent");
+  if (copilot) mkdirSync(join(home, ".copilot"));
+  if (copilotCli) fakeCli(bin, "copilot");
   const env = { ...process.env, HOME: home, SHELL: "/bin/zsh", ZDOTDIR: home, PATH: `${bin}:/usr/bin:/bin` };
-  delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME;
+  delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME; delete env.COPILOT_HOME;
   const run = (...args) => execFileSync(process.execPath, [ENGINE, ...args], { encoding: "utf8", env });
   const json = (...p) => JSON.parse(readFileSync(join(home, ...p), "utf8"));
   return { home, bin, run, json };
@@ -542,4 +544,49 @@ test("an agent file that isn't valid JSON skips that agent only", () => {
   assert.equal(doctor.cursor, true);
   assert.doesNotMatch(run("uninstall"), /Skipped/, "nothing of Revive's in it, so it isn't even read");
   assert.equal(readFileSync(settings, "utf8"), broken);
+});
+
+// ── Copilot CLI ─────────────────────────────────────────────────────────────
+
+test("Copilot hooks are flat entries with a bash command, added once and removed whole", () => {
+  const mine = { type: "command", bash: "./mine.sh", timeoutSec: 5 };
+  const before = { version: 1, hooks: { SessionStart: [mine], PreToolUse: [mine] } };
+  const once = withCopilotHooks(before);
+  assert.deepEqual(withCopilotHooks(once), once, "installing again changes nothing");
+  assert.ok(hasCopilotHooks(once));
+  assert.deepEqual(once.hooks.SessionStart[0], mine);
+  assert.match(once.hooks.SessionEnd[0].bash, /revive\.mjs.* hook --agent copilot$/);
+  assert.equal(once.hooks.SessionEnd[0].timeoutSec, 10);
+  assert.deepEqual(withCopilotHooks(once, { remove: true }), before);
+  assert.deepEqual(withCopilotHooks(withCopilotHooks({}), { remove: true }), { version: 1 });
+  assert.ok(!hasCopilotHooks({}));
+});
+
+test("Copilot's hooks go into their own file in ~/.copilot/hooks, which uninstall deletes", () => {
+  const { home, run, json } = agentsHome({ factory: false, cursor: false, copilot: true });
+  run("install", "--no-shell");
+  const got = json(".copilot", "hooks", "herdr-revive.json");
+  assert.equal(got.version, 1);
+  assert.match(got.hooks.SessionStart[0].bash, /hook --agent copilot$/);
+  assert.match(got.hooks.SessionEnd[0].bash, /hook --agent copilot$/);
+  assert.equal(JSON.parse(run("doctor")).copilot, true);
+  assert.match(run("install", "--no-shell"), /Nothing to change/);
+  run("uninstall");
+  assert.ok(!existsSync(join(home, ".copilot", "hooks", "herdr-revive.json")));
+  assert.equal(JSON.parse(run("doctor")).copilot, false);
+});
+
+// Homebrew's and /usr/local's copilot count even off PATH: a machine with one can't run this.
+const systemCopilot = ["/opt/homebrew/bin", "/usr/local/bin"].some((d) => existsSync(join(d, "copilot")));
+test("Copilot's hooks are left out while only its folder is there", { skip: systemCopilot && "copilot is installed system-wide" }, () => {
+  const app = agentsHome({ factory: false, cursor: false, copilot: true, copilotCli: false });
+  app.run("install", "--no-shell");
+  assert.ok(!existsSync(join(app.home, ".copilot", "hooks")), "~/.copilot alone is the app's or the editor's");
+  assert.equal(JSON.parse(app.run("doctor")).copilot, null);
+});
+
+test("--no-copilot leaves Copilot alone", () => {
+  const skip = agentsHome({ factory: false, cursor: false, copilot: true });
+  skip.run("install", "--no-shell", "--no-copilot");
+  assert.ok(!existsSync(join(skip.home, ".copilot", "hooks")));
 });
