@@ -25,9 +25,14 @@ const fs = require("fs"), dir = ${JSON.stringify(dir)};
 const [cmd, t, ...rest] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
 if (cmd === "get") {
+  const fg = Number(process.env.FAKE_FG);
+  let argv = state.argv;
+  if (fg) {
+    try { process.kill(fg, 0); } catch { argv = ["sh"]; }
+  }
   console.log(JSON.stringify({ address: t, state: "live", pid: Number(process.env.FAKE_PID) || 4242, cwd: "/w", labels: state.labels,
     status: state.app ? { app: state.app, state: "working" } : null,
-    foreground: { pid: Number(process.env.FAKE_FG), argv: state.argv, cwd: "/w" } }));
+    foreground: { pid: fg, argv, cwd: "/w" } }));
 } else if (cmd === "label") {
   fs.appendFileSync(dir + "/labels.log", JSON.stringify(rest) + "\\n");
 }
@@ -435,10 +440,10 @@ test("`copilot -p` records nothing; `gh copilot` is not Copilot CLI", () => {
   assert.deepEqual(gh.calls(), []);
 });
 
-test("Copilot's user_exit is forgotten while the terminal's shell lives on, kept when it died with it", () => {
+test("Copilot's user_exit is kept while it is still in the foreground, and when its shell died with it", () => {
   const exit = setup({ ...copilot, labels: copilotRec });
   exit.run(end("user_exit"), settle(process.pid));
-  assert.equal(exit.set(exit.calls())["revive.session"], "");
+  assert.deepEqual(exit.calls(), []);
   const hangup = setup({ ...copilot, labels: copilotRec });
   hangup.run(end("user_exit"), settle(deadPid()));
   assert.deepEqual(hangup.calls(), []);
