@@ -3,7 +3,7 @@
 // the machine is rebooting, so the work happens where the session lives:
 //
 //   revive.mjs hook [--agent K]   an agent's SessionStart and SessionEnd (Claude Code, Codex,
-//                                 Droid, Cursor, pi's through pi/revive.ts and omp's through
+//                                 Droid, Cursor, Copilot CLI, pi's through pi/revive.ts and omp's through
 //                                 omp/revive.ts): remember the
 //                                 session on its terminal, or forget it
 //   revive.mjs check --shell PID  from the shell's rc file: print the commands that
@@ -12,13 +12,13 @@
 //   revive.mjs list [--focus T]   every remembered session, as JSON, for the dialog
 //   revive.mjs resume T           resume T's session in T's shell
 //   revive.mjs auto T on|off      allow or stop automatic resume for T
-//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor]
+//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor] [--no-copilot]
 //   revive.mjs uninstall
 //   revive.mjs doctor             what is installed, as JSON
 //
 // Hooks never fail an agent: every error is swallowed and the exit code is 0.
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync, copyFileSync, mkdirSync, renameSync, realpathSync, rmSync, statSync, lstatSync, symlinkSync, chmodSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -206,9 +206,53 @@ async function hook(args = []) {
     // the same process; that one's SessionStart records it, and clearing here
     // could race it and erase the new record. A signal (a crash, a kill, a
     // shutdown) reports "other": the record stays, worth bringing back. `/exit`,
-    // Ctrl+C, `/logout`: the person ended it. Cursor's are in its AGENTS entry.
-    if (endAction(rec.agent, payload.reason) === "forget") await label(t, clearArgs());
+    // Ctrl+C, `/logout`: the person ended it. Cursor's and Copilot's are in
+    // their AGENTS entries.
+    const action = endAction(rec.agent, payload.reason);
+    if (action === "forget") await label(t, clearArgs());
+    else if (action === "settle") await settleLater(t, terminal.pid, session);
   }
+}
+
+const settleMs = () => {
+  const ms = Number(process.env.REVIVE_SETTLE_MS ?? 1500);
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+};
+
+/**
+ * The agent exits right after its SessionEnd and takes its hooks with it, so
+ * the wait runs in a process of its own, in a new session with no terminal:
+ * `revive.mjs settle <terminal> <session> <shell pid>`. With no wait (tests),
+ * it runs here.
+ */
+async function settleLater(t, pid, session) {
+  if (!settleMs()) return settle([t, session, String(pid)]);
+  spawn(process.execPath, [ENGINE, "settle", t, session, String(pid)], { detached: true, stdio: "ignore" }).unref();
+}
+
+async function settle([t, session, pid] = []) {
+  if (!t || !validId(session) || !/^[1-9][0-9]*$/.test(pid ?? "")) return;
+  if (await outlived(t, Number(pid), session)) await label(t, clearArgs());
+}
+
+const alive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err?.code === "EPERM"; }
+};
+
+/**
+ * For a SessionEnd whose reason can't tell the person's exit from a signal
+ * (Copilot CLI's `user_exit`): whether the terminal outlived the agent, so
+ * the person ended it. A core restart or a reboot closes the terminal, which
+ * hangs up its shell, or stops the core; `/exit` leaves the shell at its
+ * prompt. After REVIVE_SETTLE_MS, the core must still be up, the terminal live
+ * with the same shell, and the same session on record. Any doubt keeps it.
+ */
+async function outlived(t, pid, session) {
+  await new Promise((resolve) => setTimeout(resolve, settleMs()));
+  if (!(await coreUp())) return false;
+  const now = await getTerminal(t).catch(() => null);
+  if (!now || now.state !== "live" || !pid || now.pid !== pid || !alive(now.pid)) return false;
+  return liveAgent(now) !== "copilot" && readRecord(now.labels)?.session === session;
 }
 
 // ── records read back ───────────────────────────────────────────────────────
@@ -238,6 +282,7 @@ const loadRecord = (labels) => vetRecord(readRecord(labels));
 // ── the shell ───────────────────────────────────────────────────────────────
 
 const claudeDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+const copilotDir = (env = process.env) => env.COPILOT_HOME || join(homedir(), ".copilot");
 
 /**
  * Claude Code writes a session's transcript only once it has a message, so a
@@ -250,6 +295,7 @@ const claudeDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir()
  */
 export function hasTranscript(rec) {
   if (EXTENSION_AGENTS.includes(rec.agent)) return !rec.transcript || existsSync(rec.transcript);
+  if (rec.agent === "copilot") return existsSync(join(copilotDir(), "session-state", rec.session));
   if (rec.agent !== "claude") return true;
   const projects = join(claudeDir(), "projects");
   const file = `${rec.session}.jsonl`;
@@ -445,13 +491,14 @@ const extensionPath = (key) => join(EXTENSIONS[key].dir(), "extensions", "herdr-
 const isExtension = (key, path) => readText(path).includes(EXTENSIONS[key].marker);
 const factoryDir = () => agentDirs({ ...process.env, HOME: homedir() }).factory;
 const cursorDir = () => agentDirs({ ...process.env, HOME: homedir() }).cursor;
+const copilotHooks = () => join(copilotDir(), "hooks", "herdr-revive.json");
 
 /**
  * Whether a CLI is installed: on PATH, or in ~/.local/bin, where the Droid and
- * cursor-agent installers put it. The Herdr app may run Revive with a shorter
+ * cursor-agent installers put it, or in `extra` folders. The Herdr app may run Revive with a shorter
  * PATH than the person's shell has, hence the fallback.
  */
-const hasCli = (bin) => [...(process.env.PATH ?? "").split(":").filter(Boolean), join(homedir(), ".local", "bin")]
+const hasCli = (bin, extra = []) => [...(process.env.PATH ?? "").split(":").filter(Boolean), join(homedir(), ".local", "bin"), ...extra]
   .some((dir) => existsSync(join(dir, bin)));
 
 /**
@@ -599,6 +646,31 @@ export function withCursorHooks(doc, { remove = false } = {}) {
 }
 export const hasCursorHooks = (doc) => CURSOR_EVENTS.every((e) => (doc?.hooks?.[e] ?? []).some(isOurs));
 
+/**
+ * Copilot CLI's hooks file, `~/.copilot/hooks/herdr-revive.json`, Revive's
+ * own (Copilot reads every `*.json` in that folder): `{ version: 1, hooks:
+ * { SessionStart: [{ type: "command", bash, timeoutSec }], … } }`, flat
+ * entries with no groups. Entries of anyone else's in it are kept.
+ */
+const isOursCopilot = (h) => isOurs({ command: h?.bash ?? h?.command });
+export function withCopilotHooks(doc, { remove = false } = {}) {
+  const out = structuredClone(doc ?? {});
+  if (!remove) out.version ??= 1;
+  out.hooks ??= {};
+  const bash = hookCommand("copilot");
+  for (const event of EVENTS) {
+    const ours = (out.hooks[event] ?? []).filter(isOursCopilot);
+    if (!remove && ours.length === 1 && ours[0].bash === bash && ours[0].timeoutSec === 10) continue;
+    const list = (out.hooks[event] ?? []).filter((h) => !isOursCopilot(h));
+    if (!remove) list.push({ type: "command", bash, timeoutSec: 10 });
+    if (list.length) out.hooks[event] = list;
+    else delete out.hooks[event];
+  }
+  if (!Object.keys(out.hooks).length) delete out.hooks;
+  return out;
+}
+export const hasCopilotHooks = (doc) => EVENTS.every((e) => (doc?.hooks?.[e] ?? []).some(isOursCopilot));
+
 export function withShellBlock(text, { remove = false } = {}) {
   if (remove && !text.includes(BEGIN)) return text;
   const pattern = new RegExp(`\\n?${BEGIN}[\\s\\S]*?${END}\\n?`, "g");
@@ -668,9 +740,10 @@ const CODEX_HOOKS = { matcher: true, timeouts: { SessionEnd: 3 } };
  * Where each agent's hooks are installed. `files` lists every file they may
  * be in; `target` is the one the agent reads now (Droid reads settings.json's
  * `hooks` only while there is no hooks.json). An agent is installed only when
- * `present`: Claude Code's and Codex's folder is there, Droid's and Cursor's
- * CLI is (not just their folder: Cursor's IDE makes ~/.cursor and reads its
- * hooks.json too). `flag` (`--no-…`) skips it.
+ * `present`: Claude Code's and Codex's folder is there, Droid's, Cursor's and
+ * Copilot's CLI is (not just their folder: Cursor's IDE makes ~/.cursor and
+ * reads its hooks.json too). `flag` (`--no-…`) skips it. `own`: the file is
+ * Revive's alone, removed whole on uninstall.
  */
 const HOOK_TARGETS = {
   // Like Codex: only when Claude Code is there, so a Codex-only setup gets no ~/.claude.
@@ -701,6 +774,17 @@ const HOOK_TARGETS = {
     edit: (d, o) => withCursorHooks(d, o),
     has: hasCursorHooks,
   },
+  // The Copilot app and VS Code make ~/.copilot too: the CLI must be there.
+  // Homebrew's and npm's folders count, for an app with a short PATH.
+  copilot: {
+    dir: copilotDir,
+    present: () => existsSync(copilotDir()) && hasCli("copilot", ["/opt/homebrew/bin", "/usr/local/bin"]),
+    flag: "--no-copilot",
+    own: true,
+    files: () => [copilotHooks()],
+    edit: (d, o) => withCopilotHooks(d, o),
+    has: hasCopilotHooks,
+  },
 };
 const targetOf = (h) => (h.target ?? ((files) => files[0]))(h.files());
 
@@ -729,6 +813,13 @@ function install(args, remove = false) {
         // A file without Revive in it is left as it is, formatting and all.
         const off = remove || file !== target;
         if (off && !readText(file).includes("revive.mjs")) continue;
+        // A file of Revive's own goes once nothing is left in it.
+        if (off && h.own && !h.edit(readJson(file), { remove: true }, file).hooks) {
+          rmSync(file);
+          rmSync(`${file}.revive-backup`, { force: true });
+          changed.push(file);
+          continue;
+        }
         if (saveHooks(file, (doc) => h.edit(doc, { remove: off }, file))) {
           changed.push(file);
           if (!off && h.trust) notes.push(h.trust);
@@ -815,6 +906,7 @@ export function doctorReport() {
 
 const COMMANDS = {
   hook: { run: (a) => hook(a), quiet: true },
+  settle: { run: (a) => settle(a), quiet: true },
   check: { run: check, quiet: true },
   failed: { run: failed, quiet: true },
   list: { run: list },

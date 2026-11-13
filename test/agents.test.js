@@ -133,3 +133,45 @@ test("droid exec and cursor-agent -p answer and quit: no session to bring back",
   assert.equal(isOneShot("cursor", ["cursor-agent", "--print", "fix it"]), true);
   assert.equal(isOneShot("cursor", ["cursor-agent", "--force"]), false);
 });
+
+// ── Copilot CLI ─────────────────────────────────────────────────────────────
+
+test("copilot is known by its command line and its report, never as gh's argument", () => {
+  assert.equal(agentKey(null, ["copilot"]), "copilot");
+  assert.equal(agentKey(null, ["/opt/homebrew/bin/copilot", "--model", "gpt-5"]), "copilot");
+  assert.equal(agentKey(null, ["node", "/usr/local/lib/node_modules/@github/copilot/bin/copilot"]), "copilot");
+  assert.equal(agentKey("copilot"), "copilot");
+  assert.equal(agentKey(null, ["gh", "copilot", "suggest"]), null);
+  assert.equal(agentKey(null, ["vim", "copilot"]), null);
+});
+
+test("copilot carries its model, mode and tool rules, and never folders, MCP configs or plugins", () => {
+  assert.deepEqual(
+    carriedFlags("copilot", ["copilot", "--model", "gpt-5", "--allow-all-tools", "--allow-tool", "shell(git:*)", "write", "--add-dir", "/x", "-i", "fix it"]),
+    ["--model", "gpt-5", "--allow-all-tools", "--allow-tool", "shell(git:*)", "write"],
+  );
+  assert.deepEqual(carriedFlags("copilot", ["copilot", "--additional-mcp-config", "@/m.json", "--plugin-dir", "/p", "--resume", "old", "--mode=plan", "--agent", "../x"]), ["--mode=plan"]);
+  assert.deepEqual(carriedFlags("copilot", ["node", "/x/bin/copilot", "--yolo", "--agent", "reviewer"]), ["--yolo", "--agent", "reviewer"]);
+});
+
+test("copilot resumes with --resume and has no fork", () => {
+  assert.deepEqual(command({ agent: "copilot", session: ID, flags: ["--model", "gpt-5"] }, "resume"), ["copilot", "--model", "gpt-5", "--resume", ID]);
+  assert.deepEqual(command({ agent: "copilot", session: ID, flags: ["--yolo", "--model", "gpt-5"] }, "resume", { unattended: true }), ["copilot", "--model", "gpt-5", "--resume", ID]);
+  assert.equal(command({ agent: "copilot", session: ID, flags: [] }, "fork"), null);
+  assert.equal(canFork("copilot"), false);
+});
+
+test("copilot's SessionEnd: complete forgets, user_exit is settled, the rest is kept", () => {
+  assert.equal(endAction("copilot", "complete"), "forget");
+  assert.equal(endAction("copilot", "user_exit"), "settle");
+  for (const reason of ["abort", "error", "timeout", undefined]) assert.equal(endAction("copilot", reason), "keep");
+});
+
+test("copilot -p, --acp and its subcommands answer and quit", () => {
+  assert.equal(isOneShot("copilot", ["copilot", "-p", "fix it"]), true);
+  assert.equal(isOneShot("copilot", ["copilot", "--prompt=fix it"]), true);
+  assert.equal(isOneShot("copilot", ["copilot", "--acp"]), true);
+  assert.equal(isOneShot("copilot", ["copilot", "login"]), true);
+  assert.equal(isOneShot("copilot", ["copilot", "--model", "gpt-5"]), false);
+  assert.equal(isOneShot("copilot", ["copilot", "-i", "fix it"]), false);
+});

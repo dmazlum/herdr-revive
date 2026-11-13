@@ -16,7 +16,7 @@ conversation, the same model and flags. There's nothing to type and nothing runn
 background. While an agent is live, one key forks its conversation into a new pane beside
 it.
 
-Works with **Claude Code**, **Codex**, **Cursor**, **Droid**, **pi** and **omp**.
+Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **pi** and **omp**.
 
 ![Revive](preview.png)
 
@@ -40,6 +40,7 @@ Works with **Claude Code**, **Codex**, **Cursor**, **Droid**, **pi** and **omp**
 | [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) | experimental (tested with omp 18.16) | `omp --resume <id>` | `omp --fork <id>` | extension |
 | [Factory Droid](https://docs.factory.com) (`droid`) | experimental | `droid --resume <id>` | `droid --fork <id>` | hooks |
 | [Cursor CLI](https://cursor.com/docs/cli/overview) (`cursor-agent`) | experimental | `cursor-agent --resume <id>` | no fork | hooks |
+| [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
 
 What "experimental" means for each one is under [Limits](#limits).
 
@@ -85,6 +86,7 @@ only in a resume you start from the dialog:
 | Claude Code | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode` other than `default`, `manual`, `plan` or `dontAsk` |
 | Codex | `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`, `-a never`, `-s danger-full-access` |
 | Cursor | `-f`/`--force`, `--yolo`, `--sandbox` other than `enabled` |
+| Copilot CLI | `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--allow-url` |
 | omp | `--auto-approve`, `--plan-yolo`, `--approval-mode` |
 | Droid | `--auto` |
 | pi | `-a`/`--approve` |
@@ -112,6 +114,8 @@ and omp's `--skills` (`commit,review`). A value that looks like a path is droppe
     `--plugin-dir`, `-e`/`--extension`, `--hook`, `--config`, `--approve-mcps`
   - extra instructions: `--system-prompt`, `--append-system-prompt`, `--skill`
   - extra folders: `--add-dir`, omp's `--allow-home`, Cursor's `--workspace`
+  - Copilot CLI's `--additional-mcp-config`, `--enable-mcp-server`, `--plugin-dir` and
+    `--share…`
 
   A session started with one of these comes back without it.
 
@@ -163,6 +167,8 @@ Each agent is set up only when it looks installed:
 - Droid: `~/.factory` exists and the `droid` CLI is on `PATH` or in `~/.local/bin`.
 - Cursor: the `cursor-agent` CLI is on `PATH` or in `~/.local/bin`, or
   `~/.local/share/cursor-agent` exists.
+- Copilot CLI: `~/.copilot` (or `COPILOT_HOME`) exists and the `copilot` CLI is on `PATH`,
+  in `~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`.
 
 | Agent | What it adds |
 | --- | --- |
@@ -172,8 +178,9 @@ Each agent is set up only when it looks installed:
 | omp | A link from `~/.omp/agent/extensions/herdr-revive.ts` to `mods/revive/omp/revive.ts`. omp loads it the next time it starts. |
 | Droid | The two hooks in `~/.factory/hooks.json` if you have one, else in the `hooks` key of `~/.factory/settings.json` (Droid reads that one only while there is no `hooks.json`). Droid warns that its hooks changed and shows them in `/hooks`. |
 | Cursor | `sessionStart` and `sessionEnd` in `~/.cursor/hooks.json`. A `~/.cursor` folder alone doesn't count as installed, since the Cursor editor makes one and reads that `hooks.json` too. |
+| Copilot CLI | `SessionStart` and `SessionEnd` in a file of its own, `~/.copilot/hooks/herdr-revive.json` (Copilot reads every `*.json` there); `uninstall` deletes it. A `~/.copilot` folder alone doesn't count as installed, since the Copilot app and editors make one too. |
 
-Droid's and Cursor's hooks run `revive.mjs hook --agent droid|cursor`.
+Droid's, Cursor's and Copilot CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot`.
 
 It also adds a short block to the file your shell reads at start:
 
@@ -201,7 +208,7 @@ How it treats your files:
 
 ```sh
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
-node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor
+node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
 node ~/.config/herdr-app/mods/revive/revive.mjs doctor                 # what is installed
 ```
@@ -237,7 +244,7 @@ changes nothing when they already are.
 1. **Record.** When an agent starts a session in a Herdr terminal, its `SessionStart` hook
    runs `revive.mjs hook`. pi and omp have no hooks file: Revive's extension for each runs
    it with the same payload. The session id is the hook's `session_id` (Claude Code,
-   Codex, Droid, pi, omp) or `conversation_id` (Cursor, whose folder comes from
+   Codex, Droid, Copilot CLI, pi, omp) or `conversation_id` (Cursor, whose folder comes from
    `workspace_roots`). The hook labels the terminal (`hc label`) with the agent, the
    session id, the folder, the flags worth keeping, and the pid and start time of the
    terminal's program. Only the agent in the terminal's foreground is recorded (with any
@@ -246,7 +253,9 @@ changes nothing when they already are.
    labels go. A signal ended it (reason `other`): the labels stay. `/clear` leaves them to
    the new session, which records itself. Droid sends Claude Code's reasons. Cursor's
    `completed` and `user_close` forget the session; anything else (`aborted`, `error`, …)
-   keeps it.
+   keeps it. Copilot CLI's `complete` (a `-p` run) forgets it, and its `user_exit` forgets
+   it only if the terminal's shell is still alive a moment later (see
+   [Copilot CLI](#copilot-cli)).
 3. **Resume.** After a reboot or a core restart, herdr-core gives the terminal a new shell.
    Its rc file checks, without starting anything, that a session is remembered and that it
    wasn't started by hand from another shell, then asks `revive.mjs check`. The terminal's
@@ -277,8 +286,9 @@ REVIVE_DEBUG=1 zsh               # say why a shell did or didn't resume
 - Sessions started before Revive was installed have no record. The dialog still finds a
   running one from the files its agent writes (Claude Code: `sessions/<pid>.json`; Droid:
   the newest `~/.factory/sessions/<folder, dashed>/<id>.jsonl` written since it started;
-  Cursor: the newest `~/.cursor/chats/<md5 of the folder>/<id>/`), so it can be forked, but
-  it won't come back by itself.
+  Cursor: the newest `~/.cursor/chats/<md5 of the folder>/<id>/`; Copilot CLI: the
+  `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process), so it can
+  be forked, but it won't come back by itself.
 - An agent that died while its shell lived on is not resumed automatically, since nothing
   told the shell. Use **Resume** in the dialog.
 - Shells: zsh and bash. Other shells can run `revive.mjs check --shell $$` from their own
@@ -348,6 +358,26 @@ flags, `--session`/`--fork` or how it ends on a signal.
   Cursor only under a path that says so (`…/cursor-agent/…`) or when it reports itself as
   Cursor to Herdr. Cursor's hooks also run for the Cursor editor's chats; outside a Herdr
   terminal they do nothing.
+
+### Copilot CLI
+
+- Checked by hand with copilot 1.0.109 on macOS: the hooks record the session and flags,
+  and `copilot --resume <id>` reopens it. Not checked yet: a real reboot.
+- Copilot fires `SessionStart` at a session's first message, not when it opens: a session
+  you never sent a message has no record (and nothing to resume).
+- Its `SessionEnd` says `user_exit` for `/exit` and Ctrl+C, and also when it is killed
+  with SIGTERM or SIGHUP, as on a reboot or core restart. So Revive waits a moment
+  (`REVIVE_SETTLE_MS`, 1.5 s) and forgets the session only if herdr-core is up and the
+  terminal still has the same, living shell, as after `/exit`. A reboot or core restart
+  takes the shell with it, and the session is kept. A `kill` of `copilot` alone, with its
+  shell left alive, looks like `/exit` and is forgotten.
+- A resumed Copilot session keeps its own model, mode and approvals: dropping
+  `--allow-all` from an automatic resume does not take back approvals the session itself
+  already holds.
+- `COPILOT_HOME` is recorded by name, like the other agents' config folders.
+- No fork from the dialog: Copilot CLI has no fork flag. Use `/fork` inside the session.
+- `gh copilot` (gh's own command) is not recognized; the `copilot` CLI is, also as
+  `node …/copilot` from npm.
 
 ## Development
 
