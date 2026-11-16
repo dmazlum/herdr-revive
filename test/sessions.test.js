@@ -141,6 +141,18 @@ test("claude: a session in a folder with a long path is found and keeps its fold
   assert.match(claudeStartFolder({ dirs, session: B, cwd: LONG }).why, /doesn't say which folder/);
 });
 
+test("claude: two long folders that share their first 200 characters keep their own sessions", () => {
+  const dirs = agentDirs({ HOME: home() });
+  const other = LONG.replace("café.app", "other");
+  assert.equal(claudeProject(other).slice(0, 200), LONG_PROJECT.slice(0, 200));
+  assert.notEqual(claudeProject(other), LONG_PROJECT);
+  transcript(dirs, claudeProject(other), A, [{ cwd: other }]);
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: LONG }), { cwd: other }, "moved");
+  // Filed under one folder's name, started in the other: not where --resume looks.
+  transcript(dirs, LONG_PROJECT, B, [{ cwd: other }]);
+  assert.match(claudeStartFolder({ dirs, session: B, cwd: LONG }).why, /doesn't say which folder/);
+});
+
 test("claude: no transcript, or one that doesn't say its folder, is not resumable", () => {
   const dirs = agentDirs({ HOME: home() });
   assert.match(claudeStartFolder({ dirs, session: A, cwd: CWD }).why, /no message yet/);
