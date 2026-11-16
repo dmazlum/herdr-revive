@@ -35,7 +35,7 @@ import {
   stateOf, shouldResume, ownShell, promptShell, idleWrappedShell, resumeScript, resumeLine, shQuote, shJoin, validId, needsOf, shortId, needsHint, unresumable,
   printfLine,
 } from "./lib/core.js";
-import { agentDirs, claudeStartFolder, findSession } from "./lib/sessions.js";
+import { agentDirs, claudeProject, claudeStartFolder, findSession } from "./lib/sessions.js";
 
 const run = promisify(execFile);
 export const ENGINE = fileURLToPath(import.meta.url);
@@ -254,8 +254,8 @@ const claudeDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir()
 /**
  * Claude Code writes a session's transcript only once it has a message, so a
  * session opened and left empty can't be resumed: `--resume` says "No
- * conversation found". Its folder is named after the cwd; other folders are
- * searched when the agent moved. Codex is not checked. Only this process's
+ * conversation found". Its folder is named after the cwd (`claudeProject`);
+ * other folders are searched when the agent moved. Codex is not checked. Only this process's
  * `CLAUDE_CONFIG_DIR` is searched: a record with needs is never checked here
  * (see `resume`). pi and omp do the same; their record names the file, which
  * is all there is to check.
@@ -265,7 +265,7 @@ export function hasTranscript(rec) {
   if (rec.agent !== "claude") return true;
   const projects = join(claudeDir(), "projects");
   const file = `${rec.session}.jsonl`;
-  if (rec.cwd && existsSync(join(projects, rec.cwd.replace(/[^A-Za-z0-9]/g, "-"), file))) return true;
+  if (rec.cwd && existsSync(join(projects, claudeProject(rec.cwd), file))) return true;
   try { return readdirSync(projects).some((dir) => existsSync(join(projects, dir, file))); }
   catch { return false; }
 }

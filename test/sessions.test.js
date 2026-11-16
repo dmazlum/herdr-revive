@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentDirs, claudeStartFolder, findSession, sessionDir } from "../mods/revive/lib/sessions.js";
+import { agentDirs, claudeProject, claudeStartFolder, findSession, sessionDir } from "../mods/revive/lib/sessions.js";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -118,6 +118,27 @@ test("claude: an entry past the first piece read is still found", () => {
   const dirs = agentDirs({ HOME: home() });
   transcript(dirs, "-Users-me-code-my-app", A, [{ type: "summary", text: "x".repeat(100_000) }, { cwd: CWD }]);
   assert.deepEqual(claudeStartFolder({ dirs, session: A }), { cwd: CWD });
+});
+
+// Past 200 characters Claude Code shortens a project's name and adds a hash.
+const LONG = "/Users/me/code/" + "a".repeat(100) + "/" + "b".repeat(100) + "/café.app";
+const LONG_PROJECT = "-Users-me-code-" + "a".repeat(100) + "-" + "b".repeat(84) + "-i1o417";
+
+test("claude: a project is named as Claude Code names it, shortened past 200 characters", () => {
+  assert.equal(claudeProject(CWD), "-Users-me-code-my-app");
+  assert.equal(claudeProject("/" + "x".repeat(199)), "-" + "x".repeat(199), "200: kept whole");
+  assert.equal(claudeProject("/" + "x".repeat(200)), "-" + "x".repeat(199) + "-d0i18x", "201: shortened");
+  assert.equal(claudeProject(LONG), LONG_PROJECT);
+});
+
+test("claude: a session in a folder with a long path is found and keeps its folder", () => {
+  const dirs = agentDirs({ HOME: home() });
+  transcript(dirs, LONG_PROJECT, A, [{ cwd: LONG }]);
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: LONG }), { cwd: LONG });
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: CWD }), { cwd: LONG }, "moved");
+  // Filed under the long name cut at 200 without the hash: not where --resume looks.
+  transcript(dirs, LONG_PROJECT.slice(0, 200), B, [{ cwd: LONG }]);
+  assert.match(claudeStartFolder({ dirs, session: B, cwd: LONG }).why, /doesn't say which folder/);
 });
 
 test("claude: no transcript, or one that doesn't say its folder, is not resumable", () => {

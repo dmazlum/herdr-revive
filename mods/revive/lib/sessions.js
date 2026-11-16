@@ -16,6 +16,21 @@ import { validId } from "./core.js";
 /** A folder as Claude Code and Droid name its store: every non-alphanumeric a dash. */
 const dashed = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
+/**
+ * The name of the folder Claude Code keeps a working folder's transcripts in,
+ * under `projects/`: the dashed folder, or, past 200 characters, its first 200
+ * and a dash and a hash of the folder (31-based over UTF-16 code units, as an
+ * int32, in base 36). Read off Claude Code 2.1.325 and checked by hand on
+ * macOS against the folder it made for a 226-character path.
+ */
+export function claudeProject(cwd) {
+  const name = dashed(cwd);
+  if (name.length <= 200) return name;
+  let hash = 0;
+  for (let i = 0; i < cwd.length; i++) hash = (hash << 5) - hash + cwd.charCodeAt(i) | 0;
+  return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
+
 /** Where each agent keeps its files, from the environment. */
 export function agentDirs(env = process.env) {
   const home = env.HOME || "";
@@ -137,13 +152,13 @@ export function claudeStartFolder({ dirs = agentDirs(), session, cwd = null } = 
   if (!validId(session)) return { why: "its session id is malformed" };
   const projects = join(dirs.claude, "projects");
   const file = `${session}.jsonl`;
-  const here = cwd ? join(projects, dashed(cwd)) : null;
+  const here = cwd ? join(projects, claudeProject(cwd)) : null;
   const dir = here && existsSync(join(here, file)) ? here
     : list(projects).map((d) => join(projects, d)).find((d) => existsSync(join(d, file)));
   if (!dir) return { why: "it has no message yet, so there is nothing to resume" };
   const start = firstCwd(join(dir, file));
   // A folder filed under another name isn't one `--resume` would look in.
-  if (!start?.startsWith("/") || join(projects, dashed(start)) !== dir) {
+  if (!start?.startsWith("/") || join(projects, claudeProject(start)) !== dir) {
     return { why: "its transcript doesn't say which folder it started in" };
   }
   return { cwd: start };

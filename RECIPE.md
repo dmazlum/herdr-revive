@@ -345,8 +345,10 @@ reboot with either agent.
   needs: `sessions/<pid>.json` and the terminal hold the folder it is in now, which can
   move. It is the `cwd` of the first entry in its transcript that has one, and must be
   the folder the transcript is filed under (`projects/<folder, every non-alphanumeric a
-  dash>/`). It is never taken from that name, which can't be turned back into a path
-  (`/a/my-proj` and `/a/my/proj` are both `-a-my-proj`). A session with no transcript has
+  dash>/`; past 200 characters, Claude Code keeps the first 200 and adds a dash and a hash
+  of the folder, and `claudeProject` does the same). It is never taken from that name,
+  which can't be turned back into a path (`/a/my-proj` and `/a/my/proj` are both
+  `-a-my-proj`). A session with no transcript has
   no message yet, so nothing to resume, and is skipped.
 - `adopt` records `CLAUDE_CONFIG_DIR` as a need (by name) when it is set in its own
   environment: the session was found in the folder it names, so the agent ran with it.
