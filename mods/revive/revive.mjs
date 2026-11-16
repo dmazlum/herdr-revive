@@ -210,7 +210,7 @@ async function hook(args = []) {
     // their AGENTS entries.
     const action = endAction(rec.agent, payload.reason);
     if (action === "forget") await label(t, clearArgs());
-    else if (action === "settle") await settleLater(t, terminal.pid, session);
+    else if (action === "settle") await settleLater(t, terminal.pid, session, target);
   }
 }
 
@@ -222,17 +222,20 @@ const settleMs = () => {
 /**
  * The agent exits right after its SessionEnd and takes its hooks with it, so
  * the wait runs in a process of its own, in a new session with no terminal:
- * `revive.mjs settle <terminal> <session> <shell pid>`. With no wait (tests),
- * it runs here.
+ * `revive.mjs settle <terminal> <session> <shell pid> <agent pid>`. With no
+ * wait (tests), it runs here.
  */
-async function settleLater(t, pid, session) {
-  if (!settleMs()) return settle([t, session, String(pid)]);
-  spawn(process.execPath, [ENGINE, "settle", t, session, String(pid)], { detached: true, stdio: "ignore" }).unref();
+async function settleLater(t, pid, session, agentPid) {
+  const args = [t, session, String(pid), String(agentPid)];
+  if (!settleMs()) return settle(args);
+  spawn(process.execPath, [ENGINE, "settle", ...args], { detached: true, stdio: "ignore" }).unref();
 }
 
-async function settle([t, session, pid] = []) {
-  if (!t || !validId(session) || !/^[1-9][0-9]*$/.test(pid ?? "")) return;
-  if (await outlived(t, Number(pid), session)) await label(t, clearArgs());
+const isPid = (s) => /^[1-9][0-9]*$/.test(s ?? "");
+
+async function settle([t, session, pid, agentPid] = []) {
+  if (!t || !validId(session) || !isPid(pid) || !isPid(agentPid)) return;
+  if (await outlived(t, Number(pid), session, Number(agentPid))) await label(t, clearArgs());
 }
 
 const alive = (pid) => {
@@ -245,14 +248,18 @@ const alive = (pid) => {
  * the person ended it. A core restart or a reboot closes the terminal, which
  * hangs up its shell, or stops the core; `/exit` leaves the shell at its
  * prompt. After REVIVE_SETTLE_MS, the core must still be up, the terminal live
- * with the same shell, and the same session on record. Any doubt keeps it.
+ * with the same shell, and the same session on record. Copilot still in the
+ * foreground as the same process (`agentPid`) means `/clear`: the person ended
+ * this session for a new one. Another Copilot there may be resuming it, so it
+ * stays. Any doubt keeps it.
  */
-async function outlived(t, pid, session) {
+async function outlived(t, pid, session, agentPid) {
   await new Promise((resolve) => setTimeout(resolve, settleMs()));
   if (!(await coreUp())) return false;
   const now = await getTerminal(t).catch(() => null);
   if (!now || now.state !== "live" || !pid || now.pid !== pid || !alive(now.pid)) return false;
-  return liveAgent(now) !== "copilot" && readRecord(now.labels)?.session === session;
+  if (readRecord(now.labels)?.session !== session) return false;
+  return liveAgent(now) !== "copilot" || now.foreground?.pid === agentPid;
 }
 
 // ── records read back ───────────────────────────────────────────────────────
@@ -282,7 +289,7 @@ const loadRecord = (labels) => vetRecord(readRecord(labels));
 // ── the shell ───────────────────────────────────────────────────────────────
 
 const claudeDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
-const copilotDir = (env = process.env) => env.COPILOT_HOME || join(homedir(), ".copilot");
+const copilotDir = () => agentDirs({ ...process.env, HOME: homedir() }).copilot;
 
 /**
  * Claude Code writes a session's transcript only once it has a message, so a

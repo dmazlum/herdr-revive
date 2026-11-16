@@ -254,9 +254,10 @@ export default class Revive extends View {
 
   /**
    * An agent running in the focused terminal that Revive has no record of. A
-   * Codex session (a Copilot CLI one too) is recorded at its first message, and
-   * never while Codex's shared background server runs it: that server, not the terminal, runs the
-   * hooks, so they can't tell which terminal the session is in.
+   * Codex or Copilot CLI session is recorded at its first message. A Codex one
+   * is never recorded while Codex's shared background server runs it: that
+   * server, not the terminal, runs the hooks, so they can't tell which
+   * terminal the session is in.
    */
   unrecordedCard(t, entry) {
     const agent = AGENTS[entry.live];

@@ -204,18 +204,26 @@ terminal carries it to the next restart. Both session-file layouts above match. 
 checked yet: Cursor's `sessionEnd` reasons for `/exit`, Ctrl+C and a shutdown, and a real
 reboot with either agent.
 
-Checked by hand with copilot 1.0.109 on macOS: Copilot reports `copilot` to Herdr; hooks
-in `~/.copilot/hooks/*.json` run with the `copilot` process as their parent; `SessionStart`
-fires at a session's first message (`source: "new"`) and again on `--resume`
-(`source: "resume"`), with `session_id` and `cwd`; `copilot --resume <id>` reopens it, and
+Checked by hand with copilot 1.0.109 and 1.0.111 on macOS: Copilot reports `copilot` to
+Herdr; hooks in `~/.copilot/hooks/*.json` run with the `copilot` process as their parent;
+`SessionStart` fires at a session's first message (`source: "new"`) and again on `--resume`
+(`source: "resume"`), with `session_id` and `cwd`. The event names must be PascalCase
+(`SessionStart`, `SessionEnd`): Copilot then sends Claude Code's snake_case input
+(`hook_event_name`, `session_id`), while a camelCase `sessionStart` hook gets `sessionId`
+and no event name, which `hookPayload` does not read. Captured input is in
+`test/fixtures/copilot/`. `copilot --resume <id>` reopens it, and
 an unknown id exits 1 at once. `SessionEnd` sends `complete` for a `-p` run and
 `user_exit` for `/exit`, Ctrl+C, `/clear`, SIGTERM and SIGHUP alike. `user_exit` is
 therefore settled (`end` returns `"settle"`). Copilot exits right after the hook and
-takes it down, so the hook starts `revive.mjs settle <terminal> <session> <shell pid>` in a
-session of its own and returns. After `REVIVE_SETTLE_MS` (1500), the session
-is forgotten only if herdr-core is up, the terminal is live with the same program pid,
-that process is alive, and the record still names the session; any doubt keeps it.
-`abort`, `error` and `timeout` keep it.
+takes it down, so the hook starts `revive.mjs settle <terminal> <session> <shell pid>
+<agent pid>` in a session of its own and returns. After `REVIVE_SETTLE_MS` (1500), the
+session is forgotten only if herdr-core is up, the terminal is live with the same program
+pid, that process is alive, the record still names the session, and Copilot is either gone
+from the foreground (`/exit`) or still there as the same process (`/clear`). Another
+Copilot in the foreground may be resuming the session, so it is kept; so is anything in
+doubt. `abort`, `error` and `timeout` keep it. Checked by hand on macOS 26.7: with a
+Copilot session open, a core restart (`hc server restart`) and a real reboot each kept the
+record and resumed the session.
 
 ## Rules
 

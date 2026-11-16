@@ -40,7 +40,7 @@ Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, *
 | [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) | experimental (tested with omp 18.16) | `omp --resume <id>` | `omp --fork <id>` | extension |
 | [Factory Droid](https://docs.factory.com) (`droid`) | experimental | `droid --resume <id>` | `droid --fork <id>` | hooks |
 | [Cursor CLI](https://cursor.com/docs/cli/overview) (`cursor-agent`) | experimental | `cursor-agent --resume <id>` | no fork | hooks |
-| [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
+| [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109 and 1.0.111) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
 
 What "experimental" means for each one is under [Limits](#limits).
 
@@ -361,8 +361,9 @@ flags, `--session`/`--fork` or how it ends on a signal.
 
 ### Copilot CLI
 
-- Checked by hand with copilot 1.0.109 on macOS: the hooks record the session and flags,
-  and `copilot --resume <id>` reopens it. Not checked yet: a real reboot.
+- Checked by hand with copilot 1.0.109 and 1.0.111 on macOS: the hooks record the session
+  and flags, and `copilot --resume <id>` reopens it. A core restart (`hc server restart`)
+  and a real reboot (macOS 26.7) with a Copilot session open each brought it back.
 - Copilot fires `SessionStart` at a session's first message, not when it opens: a session
   you never sent a message has no record (and nothing to resume).
 - Its `SessionEnd` says `user_exit` for `/exit` and Ctrl+C, and also when it is killed
@@ -371,6 +372,17 @@ flags, `--session`/`--fork` or how it ends on a signal.
   terminal still has the same, living shell, as after `/exit`. A reboot or core restart
   takes the shell with it, and the session is kept. A `kill` of `copilot` alone, with its
   shell left alive, looks like `/exit` and is forgotten.
+- On a reboot, interactive zsh and bash ignore SIGTERM. If herdr-core is still answering
+  1.5 s after Copilot got its SIGTERM, the shell may still be alive at its prompt, which
+  looks like `/exit`: the session would be forgotten and not come back. It didn't happen
+  on the reboot checked by hand, but nothing rules it out; use **Resume** in the dialog if
+  it does.
+- `/clear` also says `user_exit`, with `copilot` still running. Revive forgets the cleared
+  session when the same `copilot` process is still in the terminal's foreground after the
+  wait; the new session records itself at its first message.
+- Quitting and starting `copilot` again within the wait keeps the old session on record
+  (the new run may be resuming it). If you then quit that run before sending a message, a
+  restart brings back the earlier session.
 - A resumed Copilot session keeps its own model, mode and approvals: dropping
   `--allow-all` from an automatic resume does not take back approvals the session itself
   already holds.

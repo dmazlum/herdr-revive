@@ -10,12 +10,16 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodS
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseProcesses, hasTranscript } from "../mods/revive/revive.mjs";
-import { hookOwner, needsHint } from "../mods/revive/lib/core.js";
+import { hookOwner, hookPayload, needsHint } from "../mods/revive/lib/core.js";
 
 const ENGINE = resolve("mods/revive/revive.mjs");
 const ID = "0c8b28eb-1111-4222-8333-444455556666";
 
-/** A fake `hc`: `get` answers from state.json, `label` appends to labels.log. */
+/**
+ * A fake `hc`: `get` answers from state.json, `label` appends to labels.log.
+ * The foreground is the fake agent (FAKE_FG), or state.json's `fg` once a test
+ * puts another process there.
+ */
 function setup({ labels = {}, app = null, argv = ["claude", "--model", "opus", "fix it"], bin = "claude" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "revive-hook-"));
   writeFileSync(join(dir, "state.json"), JSON.stringify({ labels, app, argv }));
@@ -25,7 +29,7 @@ const fs = require("fs"), dir = ${JSON.stringify(dir)};
 const [cmd, t, ...rest] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
 if (cmd === "get") {
-  const fg = Number(process.env.FAKE_FG);
+  const fg = state.fg ?? Number(process.env.FAKE_FG);
   let argv = state.argv;
   if (fg) {
     try { process.kill(fg, 0); } catch { argv = ["sh"]; }
@@ -56,7 +60,11 @@ if (cmd === "get") {
   });
   const calls = () => (existsSync(join(dir, "labels.log")) ? readFileSync(join(dir, "labels.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
   const set = (calls) => Object.fromEntries(calls.flat().map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
-  return { run, calls, set };
+  const state = (patch) => {
+    const file = join(dir, "state.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ...patch }));
+  };
+  return { run, calls, set, state };
 }
 
 const start = { hook_event_name: "SessionStart", session_id: ID, cwd: "/w", source: "startup" };
@@ -440,13 +448,34 @@ test("`copilot -p` records nothing; `gh copilot` is not Copilot CLI", () => {
   assert.deepEqual(gh.calls(), []);
 });
 
-test("Copilot's user_exit is kept while it is still in the foreground, and when its shell died with it", () => {
-  const exit = setup({ ...copilot, labels: copilotRec });
-  exit.run(end("user_exit"), settle(process.pid));
-  assert.deepEqual(exit.calls(), []);
+test("Copilot's user_exit is kept when its shell died with it", () => {
   const hangup = setup({ ...copilot, labels: copilotRec });
   hangup.run(end("user_exit"), settle(deadPid()));
   assert.deepEqual(hangup.calls(), []);
+});
+
+test("Copilot's /clear (user_exit, the same process still in the foreground) forgets the cleared session", () => {
+  const clear = setup({ ...copilot, labels: copilotRec });
+  clear.run(end("user_exit"), settle(process.pid));
+  assert.equal(clear.set(clear.calls())["revive.session"], "");
+});
+
+const settled = async (h) => {
+  for (let i = 0; i < 20 && !h.calls().length; i++) await new Promise((r) => setTimeout(r, 50));
+};
+
+test("Copilot's user_exit is kept when another Copilot is in the foreground by then, or a new session is on record", async () => {
+  // `copilot --resume <id>` typed again within the wait: it may be this same session.
+  const rerun = setup({ ...copilot, labels: copilotRec });
+  rerun.run(end("user_exit"), { env: { REVIVE_SETTLE_MS: "300", FAKE_PID: String(process.pid) } });
+  rerun.state({ fg: process.pid });
+  await settled(rerun);
+  assert.deepEqual(rerun.calls(), []);
+  const next = setup({ ...copilot, labels: copilotRec });
+  next.run(end("user_exit"), { env: { REVIVE_SETTLE_MS: "300", FAKE_PID: String(process.pid) } });
+  next.state({ labels: { ...copilotRec, "revive.session": "11111111-2222-4333-8444-555566667777" } });
+  await settled(next);
+  assert.deepEqual(next.calls(), []);
 });
 
 test("Copilot's user_exit is settled after the hook returns, by a process the agent's exit can't take down", async () => {
@@ -480,6 +509,39 @@ test("a Copilot session is resumable once its session-state folder exists", () =
     if (before === undefined) delete process.env.COPILOT_HOME;
     else process.env.COPILOT_HOME = before;
   }
+});
+
+// Hook input captured from copilot 1.0.111 (see test/fixtures/copilot/README.md).
+const fixture = (name) => JSON.parse(readFileSync(resolve("test/fixtures/copilot", `${name}.json`), "utf8"));
+
+test("Copilot's captured hook input reads like Claude Code's; a camelCase hook's does not", () => {
+  const started = hookPayload(fixture("session-start"));
+  assert.equal(started.event, "SessionStart");
+  assert.equal(started.session, "2e9bf9fd-76cc-4d7c-be8d-662501107f55");
+  assert.equal(started.cwd, "/w");
+  assert.equal(hookPayload(fixture("session-end-complete")).reason, "complete");
+  const exited = hookPayload(fixture("session-end-user-exit"));
+  assert.equal(exited.event, "SessionEnd");
+  assert.equal(exited.reason, "user_exit");
+  const camel = hookPayload(fixture("session-start-camel"));
+  assert.equal(camel.event, null);
+  assert.equal(camel.session, null);
+});
+
+test("Copilot's captured hook input, end to end: recorded, then forgotten or settled", () => {
+  const { run, calls, set } = setup(copilot);
+  run(fixture("session-start"));
+  assert.equal(set(calls())["revive.session"], "2e9bf9fd-76cc-4d7c-be8d-662501107f55");
+  const done = setup({ ...copilot, labels: { ...copilotRec, "revive.session": "2e9bf9fd-76cc-4d7c-be8d-662501107f55" } });
+  done.run(fixture("session-end-complete"));
+  assert.equal(done.set(done.calls())["revive.session"], "");
+  const exitRec = { ...copilotRec, "revive.session": "ad28e5ff-a952-42ca-b130-4f8eb8990801" };
+  const hangup = setup({ ...copilot, labels: exitRec });
+  hangup.run(fixture("session-end-user-exit"), settle(deadPid()));
+  assert.deepEqual(hangup.calls(), []);
+  const clear = setup({ ...copilot, labels: exitRec });
+  clear.run(fixture("session-end-user-exit"), settle(process.pid));
+  assert.equal(clear.set(clear.calls())["revive.session"], "");
 });
 
 test("omp's SessionStart is remembered with the command line its extension sends", () => {

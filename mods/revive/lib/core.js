@@ -97,6 +97,8 @@ const claudeEnd = (reason) => (reason === "clear" || reason === "resume" ? "igno
  * such a run has hooks too, and must not replace the session on record.
  * `argv0Only` recognizes the agent by the first word of a command line only:
  * a short name like `pi` is often an argument (`ssh pi`, `vim pi`).
+ * `interpreterOnly` also counts it as the second word after an interpreter
+ * (`node …/bin/copilot`), and nowhere else (`gh copilot`).
  */
 export const AGENTS = {
   claude: {
@@ -305,7 +307,7 @@ export const AGENTS = {
     },
     unattended: { "-f": true, "--force": true, "--yolo": true, "--sandbox": unless("enabled") },
   },
-  // GitHub Copilot CLI, checked against copilot 1.0.109: hooks in
+  // GitHub Copilot CLI, checked against copilot 1.0.109 and 1.0.111: hooks in
   // ~/.copilot/hooks/*.json get SessionStart (at a session's first message,
   // and again on `--resume`) and SessionEnd with `session_id`; `--resume <id>`
   // reopens the same session. It has no fork on the command line (`/fork`
@@ -317,7 +319,7 @@ export const AGENTS = {
   copilot: {
     name: "Copilot CLI",
     bin: "copilot",
-    match: (word, i = 0, argv = []) => base(word) === "copilot" && (i === 0 || ["node", "bun", "deno"].includes(base(argv[0]))),
+    interpreterOnly: true,
     apps: ["copilot", "copilot-cli", "github-copilot"],
     resume: (id, flags) => ["copilot", ...flags, "--resume", id],
     fork: null,
@@ -377,7 +379,9 @@ const base = (path) => String(path ?? "").split("/").pop();
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 /** Whether one command-line word is this agent's program. */
-const isBin = (agent, word, i = 0, argv = []) => (agent.match ? agent.match(word, i, argv) : (agent.bins ?? [agent.bin]).includes(base(word)));
+const isBin = (agent, word) => (agent.match ? agent.match(word) : (agent.bins ?? [agent.bin]).includes(base(word)));
+
+const INTERPRETERS = ["node", "bun", "deno"];
 
 /** The agent behind an OSC 7501 report (`claude-code`) or a command line, or null. */
 export function agentKey(app, argv = []) {
@@ -387,7 +391,8 @@ export function agentKey(app, argv = []) {
   // `claude …`, or a script run by its interpreter: `node …/bin/codex …`.
   for (const [i, word] of argv.slice(0, 2).entries()) {
     for (const [key, agent] of Object.entries(AGENTS)) {
-      if (isBin(agent, word, i, argv) && !(i > 0 && agent.argv0Only)) return key;
+      const firstOnly = agent.argv0Only || (agent.interpreterOnly && !INTERPRETERS.includes(base(argv[0])));
+      if (isBin(agent, word) && !(i > 0 && firstOnly)) return key;
     }
   }
   return null;
@@ -400,8 +405,10 @@ export const canFork = (key) => typeof AGENTS[key]?.fork === "function";
 export const endAction = (key, reason) => (AGENTS[key]?.end ?? claudeEnd)(reason);
 
 /**
- * A hook's input, the same for every agent. Claude Code, Codex, Droid and
- * pi's extension send `SessionStart` with `session_id` and `cwd`; Cursor sends
+ * A hook's input, the same for every agent. Claude Code, Codex, Droid,
+ * pi's extension and Copilot CLI send `SessionStart` with `session_id` and
+ * `cwd` (Copilot only to hooks registered under that PascalCase name: a
+ * `sessionStart` hook gets camelCase fields and no event name); Cursor sends
  * `sessionStart` with `conversation_id` and `workspace_roots`. `agent` is what
  * the payload itself says (its transcript path, Cursor's version field), or
  * null. `argv` is the command line pi's extension sends, or null.
@@ -434,7 +441,7 @@ function payloadAgent(p) {
 
 /** Where the agent's own words start: after its program's name, else after the first word. */
 const argsStart = (key, argv) => {
-  const start = argv.findIndex((word, i) => isBin(AGENTS[key], word, i, argv));
+  const start = argv.findIndex((word) => isBin(AGENTS[key], word));
   return start < 0 ? 1 : start + 1;
 };
 
