@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentDirs, findSession, sessionDir } from "../mods/revive/lib/sessions.js";
+import { agentDirs, claudeStartFolder, findSession, sessionDir } from "../mods/revive/lib/sessions.js";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -101,4 +101,44 @@ test("cursor: the newest chat folder for the workspace written since the agent s
 test("an agent without a finder finds nothing", () => {
   assert.equal(findSession("codex", { dirs: agentDirs({ HOME: home() }), pid: 1, cwd: CWD, startedMs: T0 }), null);
   assert.equal(findSession("vim", { dirs: agentDirs({ HOME: home() }) }), null);
+});
+
+// A Claude Code transcript: the project it is filed under, and its lines.
+const transcript = (dirs, project, id, lines) => {
+  mkdirSync(join(dirs.claude, "projects", project), { recursive: true });
+  writeFileSync(join(dirs.claude, "projects", project, `${id}.jsonl`), lines.map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n") + "\n");
+};
+
+test("claude: the folder a session started in is the first cwd its transcript records", () => {
+  const dirs = agentDirs({ HOME: home() });
+  transcript(dirs, "-Users-me-code-my-app", A, [{ type: "mode" }, "{half a line", "\"a string\"", "null", { cwd: CWD }, { cwd: "/Users/me/code/my.app/sub" }]);
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: CWD }), { cwd: CWD });
+  // sessions/<pid>.json and the terminal say where it is now; --resume looks
+  // only where the conversation is filed, under the folder it started in.
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: "/Users/me/code/my.app/sub" }), { cwd: CWD }, "moved");
+  assert.deepEqual(claudeStartFolder({ dirs, session: A }), { cwd: CWD }, "no current folder: found by searching");
+});
+
+test("claude: the folder is never taken from the name the transcript is filed under", () => {
+  const dirs = agentDirs({ HOME: home() });
+  // /Users/me/code/my-app and /Users/me/code/my.app are both -Users-me-code-my-app.
+  transcript(dirs, "-Users-me-code-my-app", A, [{ cwd: "/Users/me/code/my-app" }]);
+  assert.deepEqual(claudeStartFolder({ dirs, session: A, cwd: CWD }), { cwd: "/Users/me/code/my-app" });
+});
+
+test("claude: an entry past the first piece read is still found", () => {
+  const dirs = agentDirs({ HOME: home() });
+  transcript(dirs, "-Users-me-code-my-app", A, [{ type: "summary", text: "x".repeat(100_000) }, { cwd: CWD }]);
+  assert.deepEqual(claudeStartFolder({ dirs, session: A }), { cwd: CWD });
+});
+
+test("claude: no transcript, or one that doesn't say its folder, is not resumable", () => {
+  const dirs = agentDirs({ HOME: home() });
+  assert.match(claudeStartFolder({ dirs, session: A, cwd: CWD }).why, /no message yet/);
+  // The first cwd is the one that counts, even when a later one would fit.
+  transcript(dirs, "-elsewhere", B, [{ cwd: "/somewhere/else" }, { cwd: "/elsewhere" }]);
+  assert.match(claudeStartFolder({ dirs, session: B, cwd: CWD }).why, /doesn't say which folder/);
+  transcript(dirs, "-x", C, [{ type: "mode" }, { cwd: "x" }]);
+  assert.match(claudeStartFolder({ dirs, session: C }).why, /doesn't say which folder/, "relative");
+  assert.match(claudeStartFolder({ dirs, session: "bad id", cwd: CWD }).why, /malformed/);
 });

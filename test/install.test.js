@@ -10,6 +10,15 @@ const ENGINE = resolve("mods/revive/revive.mjs");
 const theirs = { type: "command", command: "~/bin/notify.sh" };
 // The test runner's own pi folder must not be installed into.
 delete process.env.PI_CODING_AGENT_DIR;
+// Install and doctor count the running sessions Revive doesn't remember,
+// through hc: never the real one, whose core may hold this machine's
+// terminals. This one knows no terminals. /bin/sh: some tests run with a PATH
+// that has no node.
+const FAKE_HC = join(mkdtempSync(join(tmpdir(), "revive-hc-")), "hc");
+writeFileSync(FAKE_HC, `#!/bin/sh\ncase "$1" in ls) echo '{"terminals":[]}' ;; *) exit 1 ;; esac\n`);
+chmodSync(FAKE_HC, 0o755);
+process.env.REVIVE_HC = FAKE_HC;
+delete process.env.HC_TERMINAL_SOCKET;
 
 test("hooks are added beside the person's own, once", () => {
   const before = { model: "opus", hooks: { SessionStart: [{ hooks: [theirs] }], Stop: [{ hooks: [theirs] }] } };

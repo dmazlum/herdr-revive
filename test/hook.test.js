@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodS
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseProcesses, hasTranscript } from "../mods/revive/revive.mjs";
-import { hookOwner, hookPayload, needsHint } from "../mods/revive/lib/core.js";
+import { hookOwner, hookPayload, needsHint, command, readRecord } from "../mods/revive/lib/core.js";
 
 const ENGINE = resolve("mods/revive/revive.mjs");
 const ID = "0c8b28eb-1111-4222-8333-444455556666";
@@ -106,6 +106,45 @@ test("a `claude -p` typed in the terminal leaves the remembered session alone", 
   const { run, calls } = setup({ labels: remembered, argv: ["claude", "-p", "summarize this"] });
   run({ ...start, session_id: "11111111-2222-4333-8444-555566667777" });
   assert.deepEqual(calls(), []);
+});
+
+test("Codex exec after global options leaves the remembered interactive session alone", () => {
+  const { run, calls } = setup({ bin: "codex", argv: ["codex", "--model", "o3", "exec", "fix it"],
+    labels: { ...remembered, "revive.agent": "codex" } });
+  const session_id = "batch-session";
+  run({ ...start, session_id });
+  run({ hook_event_name: "SessionEnd", session_id, reason: "other" });
+  assert.deepEqual(calls(), []);
+});
+
+test("an automatic resume keeps its original flags through start and compaction for a later manual resume", () => {
+  const flags = ["--dangerously-skip-permissions", "--model", "opus"];
+  const labels = { ...remembered, "revive.flags": JSON.stringify(flags) };
+  const rec = readRecord(labels);
+  const resumed = { agent: "claude", session: ID, flags };
+  const fixture = setup({ labels, argv: command(rec, "resume", { unattended: true }) });
+  for (const source of ["resume", "compact"]) fixture.run({ ...start, source }, { env: { REVIVE_RESUME: JSON.stringify(resumed) } });
+  const got = readRecord({ ...labels, ...fixture.set(fixture.calls()) });
+  assert.deepEqual(got.flags, flags);
+  assert.deepEqual(command(got), ["claude", ...flags, "--resume", ID]);
+  assert.deepEqual(command(got, "resume", { unattended: true }), ["claude", "--model", "opus", "--resume", ID]);
+  fixture.run(end("other"));
+  assert.equal(fixture.calls().length, 2, "a signal leaves the record available for manual resume");
+  fixture.run(end("prompt_input_exit"));
+  assert.equal(fixture.set(fixture.calls())["revive.session"], "", "an intentional exit still forgets the session");
+});
+
+test("resume flag context is session-specific and filtered like terminal labels", () => {
+  for (const context of ["{broken", JSON.stringify({ agent: "codex", session: ID, flags: ["--yolo"] }),
+    JSON.stringify({ agent: "claude", session: "old-session", flags: ["--dangerously-skip-permissions"] })]) {
+    const fixture = setup();
+    fixture.run(start, { env: { REVIVE_RESUME: context } });
+    assert.equal(fixture.set(fixture.calls())["revive.flags"], '["--model","opus"]');
+  }
+  const fixture = setup();
+  fixture.run(start, { env: { REVIVE_RESUME: JSON.stringify({ agent: "claude", session: ID,
+    flags: ["--dangerously-skip-permissions", "--settings", "/bad.json", "--model", "opus"] }) } });
+  assert.equal(fixture.set(fixture.calls())["revive.flags"], '["--dangerously-skip-permissions","--model","opus"]');
 });
 
 test("a session's own config folder is remembered by name", () => {
@@ -318,7 +357,7 @@ test("an agent running with nothing on record is listed with its folder", () => 
 });
 
 /** A fake `hc` with one idle shell whose labels remember a session, for `revive.mjs resume`. */
-function resumeSetup(extra = {}) {
+function resumeSetup(extra = {}, terminal = {}) {
   const dir = mkdtempSync(join(tmpdir(), "revive-resume-"));
   const work = realpathSync(mkdtempSync(join(tmpdir(), "revive-work-")));
   const hc = join(dir, "hc");
@@ -328,7 +367,7 @@ const fs = require("fs");
 const [cmd, t, ...rest] = process.argv.slice(2);
 if (cmd === "get") console.log(JSON.stringify({ address: t, state: "live", pid: 4242, cwd: "/w",
   labels: ${JSON.stringify(labels)},
-  foreground: { pid: 4242, argv: ["zsh"], cwd: "/w" } }));
+  foreground: { pid: 4242, argv: ["zsh"], cwd: "/w" }, ...${JSON.stringify(terminal)} }));
 else if (cmd === "send") fs.writeFileSync(${JSON.stringify(join(dir, "sent.json"))}, JSON.stringify({ text: rest[0], from: process.env.HC_TERMINAL_ID ?? null }));
 else if (cmd === "label") fs.appendFileSync(${JSON.stringify(join(dir, "labels.txt"))}, rest.join(" ") + "\\n");
 `);
@@ -349,10 +388,24 @@ test("Resume types the command as is, even when run from inside a herdr terminal
   assert.equal(sent().from, null);
 });
 
+test("Resume still refuses a busy program or a shell outside the terminal's process tree", () => {
+  for (const argv of [["vim"], ["zsh"], ["sh", "-c", "sleep 60"], ["bash", "/tmp/launcher.sh"]]) {
+    const fixture = resumeSetup({}, { foreground: { pid: 999999999, argv } });
+    assert.match(fixture.resume(), /is busy with/);
+    assert.equal(fixture.sent(), null);
+  }
+});
+
 test("Resume by hand refuses a folder that failed the check, and names it", () => {
   const { resume, sent } = resumeSetup({ "revive.cwd": "/nonexistent/revive-w" });
   assert.match(resume(), /Won't resume: its folder \/nonexistent\/revive-w is missing/);
   assert.equal(sent(), null, "nothing typed: the agent would start elsewhere, with its flags");
+});
+
+test("an agent behind a shell launcher is still recognized by its report", () => {
+  const fixture = resumeSetup({}, { foreground: { pid: 4243, argv: ["bash", "/tmp/launcher.sh"] }, status: { app: "codex" } });
+  assert.match(fixture.resume(), /Codex is already running/);
+  assert.equal(fixture.sent(), null);
 });
 
 test("Resume by hand refuses a session with needs, keeps it and shows the command", () => {
@@ -578,7 +631,7 @@ else if (cmd === "label") fs.appendFileSync(${JSON.stringify(join(dir, "label.lo
   };
   const rec = { "revive.agent": "claude", "revive.session": ID, "revive.shell": "1", "revive.cwd": join(dir, "link") };
   const ok = check(rec);
-  assert.match(ok.out, new RegExp(`cd -- ${work.replace(/[/.]/g, "\\$&")} && claude --resume ${ID}`));
+  assert.match(ok.out, new RegExp(`cd -- ${work.replace(/[/.]/g, "\\$&")} && REVIVE_RESUME='[^']*' claude --resume ${ID}`));
   // The shell sets the variable itself: its own folder, so the need is met.
   assert.match(check({ ...rec, "revive.needs": '["CLAUDE_CONFIG_DIR"]' }).out, /claude --resume/);
   const hinted = check({ ...rec, "revive.needs": '["CLAUDE_CONFIG_DIR"]' }, {});
@@ -646,12 +699,14 @@ test("a hook with herdr-core up calls hc, without the agent's CLAUDE_CODE_* vari
  * that runs the shell as its child: `check` runs in that shell, and the fake
  * hc reports the wrapper's pid as the terminal's.
  */
-function wrapped({ marked = false } = {}) {
+function wrapped({ marked = false, operation = "check" } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "revive-wrap-")));
   writeFileSync(join(dir, "hc"), `#!/usr/bin/env node
 const [cmd, t] = process.argv.slice(2);
 if (cmd === "get") console.log(JSON.stringify({ address: t, state: "live", pid: Number(process.env.WRAP),
+  status: { app: "codex" }, foreground: { pid: Number(process.env.WRAPPED_SHELL), argv: ["sh"] },
   labels: { "revive.agent": "codex", "revive.session": ${JSON.stringify(ID)}, "revive.shell": "1", "revive.cwd": ${JSON.stringify(dir)} } }));
+if (cmd === "send") require("node:fs").writeFileSync(${JSON.stringify(join(dir, "sent"))}, process.argv[4]);
 `);
   chmodSync(join(dir, "hc"), 0o755);
   // The wrapper, then the shell it starts. `marked`: the wrapper is itself a
@@ -659,14 +714,19 @@ if (cmd === "get") console.log(JSON.stringify({ address: t, state: "live", pid: 
   writeFileSync(join(dir, "wrap"), `#!/bin/sh
 WRAP=$$; export WRAP
 ${marked ? "REVIVE_SHELL=$$; export REVIVE_SHELL" : "unset REVIVE_SHELL"}
-sh -c 'node ${ENGINE} check --shell $$; true'
+sh -c 'WRAPPED_SHELL=$$; export WRAPPED_SHELL; node ${ENGINE} ${operation === "check" ? "check --shell $$" : "resume t1"}; true'
 `);
   chmodSync(join(dir, "wrap"), 0o755);
-  return execFileSync(join(dir, "wrap"), [], { encoding: "utf8", env: { ...base, REVIVE_HC: join(dir, "hc"), HC_TERMINAL_ID: "t1", REVIVE_DEBUG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  const out = execFileSync(join(dir, "wrap"), [], { encoding: "utf8", env: { ...base, REVIVE_HC: join(dir, "hc"), HC_TERMINAL_ID: "t1", REVIVE_DEBUG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  return operation === "resume" && existsSync(join(dir, "sent")) ? readFileSync(join(dir, "sent"), "utf8") : out;
 }
 
 test("a shell a wrapper runs as its child is the terminal's own, and resumes", () => {
   assert.match(wrapped(), new RegExp(`codex resume ${ID}`));
+});
+
+test("manual Resume accepts a wrapper's idle child shell, including a stale agent report", () => {
+  assert.match(wrapped({ operation: "resume" }), new RegExp(`codex resume ${ID}`));
 });
 
 test("a shell started by hand inside the terminal's own shell doesn't resume", () => {

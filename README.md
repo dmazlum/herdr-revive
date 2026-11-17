@@ -62,6 +62,9 @@ What "experimental" means for each one is under [Limits](#limits).
 - **Resume by hand.** An agent that died under a shell that survived it (a crash, a `kill`)
   is listed as *Interrupted*, with a **Resume** button. One whose resume failed is listed
   as *Resume failed*, with a retry.
+- **Already running.** A Claude Code session started before Revive was installed can be
+  remembered with **Remember** in the dialog, or all at once with `revive.mjs adopt` (see
+  [Limits](#limits)).
 - **Per terminal.** Turn automatic resume off for one terminal in the dialog, or for a
   whole shell with `REVIVE_AUTO=0`.
 - **Nothing to run.** No background process. Sessions are remembered as labels on their
@@ -97,10 +100,12 @@ unrestricted after a reboot, with nobody watching. So the resumed pane says what
 out:
 
 ```
-↻ Revive: resuming Claude Code session 9e458eb4 without --dangerously-skip-permissions (quit and resume it from the Revive dialog to keep it). REVIVE_AUTO=0 skips this.
+↻ Revive  resuming Claude Code session 9e458eb4 · REVIVE_AUTO=0 skips this
+  without --dangerously-skip-permissions (only a resume from the Revive dialog keeps it)
 ```
 
-Quit the agent and resume it from the dialog to get them back.
+The original flags stay remembered for a later manual resume from the dialog.
+Exiting the agent normally still forgets its session.
 
 **Names, not paths.** Flags that pick something by name are carried only with a plain name:
 Codex's and omp's `--profile`, Claude Code's `--agent` (`reviewer`, `my-plugin:reviewer`)
@@ -182,6 +187,11 @@ Each agent is set up only when it looks installed:
 
 Droid's, Cursor's and Copilot CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot`.
 
+Last, it says how many Claude Code sessions already running in your Herdr terminals
+aren't remembered (the ones started before Revive was installed), and points to
+`revive.mjs adopt`. It never remembers them itself: install writes only its own files.
+`doctor` gives the same count as `unremembered`.
+
 It also adds a short block to the file your shell reads at start:
 
 - **zsh:** `~/.zshrc`. zsh is asked where it is, so a `ZDOTDIR` set in `~/.zshenv` is
@@ -209,24 +219,37 @@ How it treats your files:
 ```sh
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot
+node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code sessions already running
+node ~/.config/herdr-app/mods/revive/revive.mjs adopt                  # remember them
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
-node ~/.config/herdr-app/mods/revive/revive.mjs doctor                 # what is installed
+node ~/.config/herdr-app/mods/revive/revive.mjs doctor                 # what is installed, and how many running sessions aren't remembered
 ```
 
 ## Updates
 
-Herdr updates its own mods, not ones you added: yours is a copy, and nothing tells you
-when this repo changes. To hear about a new version, watch the repo for releases (on
-GitHub: **Watch → Custom → Releases**). Each
-[release](https://github.com/dmazlum/herdr-revive/releases) says what changed and whether
-`keys.json` did; merge it again when it did.
+Herdr updates its own mods, not ones you added: yours is a copy. So the Revive dialog
+checks for you: at most once a day, while it is open, it asks GitHub's public releases
+API for the latest release (no token, nothing about you or your sessions). When a newer
+one is out, a card at the top says so, links to **What changed**, and gives you the
+prompt to hand your agent:
 
-The version you have is `"version"` in `~/.config/herdr-app/mods/revive/mod.json`. To
-update, ask your agent to replace that folder with the latest `mods/revive` from
-`github.com/dmazlum/herdr-revive`. Adding it again isn't enough: an agent never
-overwrites a mod, it would add a second copy under a new name. If the mod was renamed when
-it was added (a name clash), the renamed folder is the one to replace, renamed the same way.
-Or by hand:
+> Update the Revive mod from github.com/dmazlum/herdr-revive to its latest release
+
+**Copy prompt** puts it on your clipboard. The agent follows
+[RECIPE.md](RECIPE.md#updating-it-for-the-agent-doing-it): it replaces the installed
+folder in place (adding the mod again isn't enough, an agent never overwrites a mod and
+would add a second copy under a new name), merges `keys.json` again if the release
+changed it, and runs `doctor`. **Later** hides that release until the next one; **Stop
+checking** turns the check off for good, as does `CHECK = false` in
+`mods/revive/lib/update.js` (an update puts it back).
+
+The version you have is `"version"` in `~/.config/herdr-app/mods/revive/mod.json`. You
+can also watch the repo for releases (on GitHub: **Watch → Custom → Releases**). Each
+[release](https://github.com/dmazlum/herdr-revive/releases) says what changed and whether
+`keys.json` did.
+
+To update without an agent, replace the folder yourself. If the mod was renamed when it
+was added (a name clash), use that folder's name in place of `revive` below:
 
 ```sh
 git -C herdr-revive pull          # or clone it again
@@ -288,7 +311,10 @@ REVIVE_DEBUG=1 zsh               # say why a shell did or didn't resume
   the newest `~/.factory/sessions/<folder, dashed>/<id>.jsonl` written since it started;
   Cursor: the newest `~/.cursor/chats/<md5 of the folder>/<id>/`; Copilot CLI: the
   `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process), so it can
-  be forked, but it won't come back by itself.
+  be forked where the agent forks.
+  A running Claude Code session can be remembered with **Remember** in the dialog or with
+  `revive.mjs adopt`, once it has a message. Any other agent comes back by itself only after it has been restarted once:
+  Droid's and Cursor's newest file is a guess, good enough to show but not to keep.
 - An agent that died while its shell lived on is not resumed automatically, since nothing
   told the shell. Use **Resume** in the dialog.
 - Shells: zsh and bash. Other shells can run `revive.mjs check --shell $$` from their own

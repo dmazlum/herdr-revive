@@ -31,6 +31,24 @@ const unless = (...keep) => (v) => !keep.includes(v);
 
 const claudeEnd = (reason) => (reason === "clear" || reason === "resume" ? "ignore" : reason === "other" ? "keep" : "forget");
 
+// Codex accepts options before its subcommand. Skip their values too: a
+// profile or model named `exec` is still an interactive launch.
+const CODEX_VALUE_FLAGS = new Set([
+  "-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+  "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile",
+  "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir",
+]);
+function codexOneShot(args) {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (word === "--") return false;
+    if (CODEX_VALUE_FLAGS.has(word)) { i++; continue; }
+    if (word.startsWith("-")) continue;
+    return word === "exec" || word === "e";
+  }
+  return false;
+}
+
 /**
  * The agents Revive can bring back, one entry each:
  * - `name`     what the person reads
@@ -131,7 +149,7 @@ export const AGENTS = {
     fork: (id, flags) => ["codex", "fork", ...flags, id],
     end: claudeEnd,
     env: ["CODEX_HOME"],
-    oneShot: (args) => args[0] === "exec" || args[0] === "e",
+    oneShot: codexOneShot,
     carry: {
       "--no-daemon": 0,
       "--dangerously-bypass-approvals-and-sandbox": 0,
@@ -582,6 +600,27 @@ export function ownShell(table, shellPid, terminalPid, marker = null) {
   return { own: false, why: "not the terminal's own shell" };
 }
 
+/**
+ * A shell waiting at its own prompt: no script or `-c` command. One with an
+ * operand may be launching an agent.
+ */
+export const promptShell = (argv) => isShell(argv) && argv.slice(1).every((w) => String(w).startsWith("-")
+  && (String(w).startsWith("--") ? w !== "--command" : !String(w).slice(1).includes("c")));
+
+/**
+ * Whether a manual Resume may type into the foreground shell `fg` of a
+ * terminal whose program is `terminalPid`: only a wrapper's idle child shell.
+ * When the terminal's program is itself an interactive shell, any other shell
+ * in front was started inside it by hand (`zsh`, `sudo -s`, `su`), and typing
+ * there would run the agent as someone else or in a different environment.
+ */
+export function idleWrappedShell(table, fg, terminalPid) {
+  if (!fg?.pid || !terminalPid || fg.pid === terminalPid) return false;
+  if (!promptShell(fg.argv ?? [])) return false;
+  if (promptShell(table.get(terminalPid)?.argv ?? [])) return false;
+  return ownShell(table, fg.pid, terminalPid).own;
+}
+
 /** Session ids are UUIDs (Droid's docs show `session-abc123`); anything else is refused rather than quoted. */
 export const validId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
 
@@ -644,6 +683,24 @@ export function shQuote(word) {
 }
 
 export const shJoin = (argv) => argv.map(shQuote).join(" ");
+
+/**
+ * How the shell's notes are drawn: ANSI's own colors, so they follow the
+ * terminal's theme. `accent` (bold blue) names Revive, `warn` (bold yellow)
+ * when it won't resume, `caution` (yellow) for what an automatic resume left
+ * out, `strong` for the agent, `dim` for what's said only in passing.
+ */
+const SGR = { accent: "\\033[1;34m", warn: "\\033[1;33m", caution: "\\033[33m", strong: "\\033[1m", dim: "\\033[2m" };
+
+/**
+ * A `printf` command that prints one line of styled parts, each `[style, text]`
+ * (style null for plain). The texts go in as quoted arguments, never in the
+ * format, so a `%` or a quote in them prints as it is.
+ */
+export function printfLine(parts) {
+  const format = parts.map(([style]) => (style ? `${SGR[style]}%s\\033[0m` : "%s")).join("");
+  return `printf '${format}\\n' ${parts.map(([, text]) => shQuote(text)).join(" ")}`;
+}
 
 const num = (v) => (v === undefined || v === "" || v === null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
 
@@ -773,7 +830,11 @@ export function shouldResume(rec, { pid, since = null, shellPid, env = {} }) {
 export function resumeLine(rec, { unattended = false } = {}) {
   const argv = command(rec, "resume", { unattended });
   if (!argv) return "";
-  return `${rec.cwd ? `cd -- ${shQuote(rec.cwd)} && ` : ""}${shJoin(argv)}`;
+  // Only this agent process inherits the original flags, so its SessionStart
+  // (and compaction hooks) won't erase the flags omitted from its argv. A
+  // later manual launch has its own environment and records its own flags.
+  const context = unattended ? `REVIVE_RESUME=${shQuote(JSON.stringify({ agent: rec.agent, session: rec.session, flags: safeFlags(rec.agent, rec.flags ?? []) }))} ` : "";
+  return `${rec.cwd ? `cd -- ${shQuote(rec.cwd)} && ` : ""}${context}${shJoin(argv)}`;
 }
 
 /**
@@ -788,10 +849,17 @@ export function resumeScript(rec, engine) {
   if (!line) return "";
   const name = AGENTS[rec.agent].name;
   const { dropped } = attendedFlags(rec.agent, safeFlags(rec.agent, rec.flags ?? []));
-  const without = dropped.length ? ` without ${dropped.join(", ")} (quit and resume it from the Revive dialog to keep ${dropped.length > 1 ? "them" : "it"})` : "";
-  const note = `↻ Revive: resuming ${name} session ${shortId(rec.session)}${without}. REVIVE_AUTO=0 skips this.`;
+  // `↻ Revive  resuming Claude Code session 9e458eb4 · REVIVE_AUTO=0 skips this`,
+  // and under it, in yellow, any flag an automatic resume left out.
+  const notes = [printfLine([
+    ["accent", "↻ Revive"], [null, "  resuming "], ["strong", name], [null, ` session ${shortId(rec.session)}`],
+    ["dim", " · REVIVE_AUTO=0 skips this"],
+  ])];
+  if (dropped.length) {
+    notes.push(printfLine([["caution", `  without ${dropped.join(", ")} (only a resume from the Revive dialog keeps ${dropped.length > 1 ? "them" : "it"})`]]));
+  }
   const body = [
-    `  printf '\\033[2m%s\\033[0m\\n' ${shQuote(note)}`,
+    ...notes.map((n) => `  ${n}`),
     `  __revive_t=$SECONDS`,
     `  ${line}`,
     `  if [ $? -ne 0 ] && [ $((SECONDS - __revive_t)) -lt 15 ]; then node ${shQuote(engine)} failed; fi`,
@@ -823,4 +891,20 @@ export function ago(ms, now = Date.now()) {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** How long the dialog says sessions came back: long enough to open it after a restart. */
+export const CAME_BACK_MS = 15 * 60 * 1000;
+
+/**
+ * The sessions that came back lately (a resume within CAME_BACK_MS, still
+ * running), newest first, and when the latest did. `seen` is the latest one
+ * the person already dismissed: a batch no newer than that isn't shown again.
+ */
+export function cameBack(entries = [], { now = Date.now(), seen = 0 } = {}) {
+  const list = entries
+    .filter((e) => e?.state === "running" && Number.isFinite(e?.rec?.resumed) && now - e.rec.resumed >= 0 && now - e.rec.resumed < CAME_BACK_MS)
+    .sort((a, b) => b.rec.resumed - a.rec.resumed);
+  const latest = list[0]?.rec.resumed ?? null;
+  return latest !== null && latest > (Number(seen) || 0) ? { list, latest } : { list: [], latest: null };
 }

@@ -14,3 +14,11 @@ test("every mod.json carries the package version", () => {
   assert.ok(mods.length > 0);
   for (const name of mods) assert.equal(read(`mods/${name}/mod.json`).version, version, name);
 });
+
+// The update check compares the latest release with this, so a release that
+// forgot it would keep offering itself as an update.
+test("the update check knows the package version", async () => {
+  const { version } = read("package.json");
+  const { VERSION } = await import(new URL("mods/revive/lib/update.js", root));
+  assert.equal(VERSION, version);
+});

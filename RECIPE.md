@@ -34,58 +34,139 @@ real reboot yet.
    an agent. pi loads its extension the next time it starts or at `/reload`, omp only
    the next time it starts.
 6. Run `node ~/.config/herdr-app/mods/revive/revive.mjs doctor` and report what it shows.
-7. New sessions are remembered from now on. Sessions already running are not; they come
-   back by themselves only after they are restarted once.
+7. New sessions are remembered from now on. Sessions already running are not: `install`
+   and `doctor` (`unremembered`) say how many Claude Code ones `adopt` could remember.
+   If there are any, run `node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run`
+   and show the person what it lists; `adopt` remembers them if they want. Any other
+   agent comes back by itself only after it is restarted once.
+
+## Updating it (for the agent doing it)
+
+The dialog offers *Update the Revive mod from github.com/dmazlum/herdr-revive to its
+latest release* when a newer release is out. To do it:
+
+1. Find the installed copy: the folder under `~/.config/herdr-app/mods/` whose `mod.json`
+   has `"title": "Revive"` (normally `revive`; a different name if it was renamed because
+   of a clash, and then keep that name). Its `"version"` is the one installed.
+2. Take the latest release's tag from
+   `https://github.com/dmazlum/herdr-revive/releases/latest`, read its notes and every
+   file of `mods/revive` at that tag.
+3. Replace the installed folder with that `mods/revive`, in place: delete it and copy
+   the new one under the same name. Don't add the mod again: an agent never overwrites a
+   mod, so it would add a second copy under a new name.
+4. Run `herdr-app check` on the folder. It must pass.
+5. If the release notes say `keys.json` changed, merge it again (ask first if a key is
+   already bound).
+6. Run `node ~/.config/herdr-app/mods/<folder>/revive.mjs doctor`. If an agent shows
+   `false` (a release added an agent the person has), tell them what `install` would
+   change and ask before running it, as in step 5 of *Installing it*. The hooks and shell block of an
+   earlier install point at the same folder, so they keep working without it.
 
 ## What you see
 
-- **Dialog** (`mod.open:revive`, 620px wide, as tall as its content, on `popover`, 20px
-  padding at the sides, 18px above and 16px below). The sessions scroll once the dialog
-  would pass 85% of the window; the header, the note and the footer always show.
-  - A header: **↻ Revive** (16px semibold) and *Agent sessions, remembered on their
-    terminals* in `dim`.
-  - Sections titled in 10.5px medium `dim` capitals:
-    - **FOCUSED TERMINAL**: a `raised` card with a `border`, 12px radius, 14px padding. The
-      agent's name (14px semibold), the first 8 characters of the session id in JetBrains
-      Mono `dim`, and a state on the right: a 6px dot and a word in the state's color
-      (*Running* in `ansi2`, *Lost to a restart* and *Interrupted* in `ansi3`, *Resume
-      failed* in `ansi1`). Under it the folder in `muted`, with the home folder as `~`, the
-      carried flags in 10.5px mono `dim`, and for a session started before Revive was
-      installed, a note that it can be forked but won't come back by itself. Buttons: for a
-      running agent, **Fork right** `F`, **Fork below** `D` and **Fork to a tab** `T`
-      (outline); for one that needs you, a solid **Resume** `↵`. For a running agent that
-      can't fork (Cursor): no fork buttons, and *Cursor can't fork a session.* in `dim`. A
-      Claude Code session
-      with no transcript yet can't be forked: the Fork buttons are disabled, F/D/T do
-      nothing, and the card says *This session has no message yet, so there is nothing to
-      fork. Send it one first.* A session that ran with something Revive doesn't carry
-      (see *Config folders*) can't be forked from the dialog either: *It ran with
-      CLAUDE_CONFIG_DIR: fork it from its own shell.* Neither can one whose folder failed
-      the check: *Its folder is missing, not yours, or writable by others.* An agent running in the terminal with nothing on record
-      gets the same card without an id or buttons: its name, *Running*, its folder, and a
-      `dim` note that Revive has no record of it, so it can't be forked or brought back.
-      For Codex the note adds that Codex records a session at its first message, and not
-      at all while its shared background server runs it (`daemon_auto_start`). Without an
-      agent: *No agent session in the focused terminal.* On another machine:
-      a note that Revive works on this computer for now.
-    - **NEED YOU**: other terminals whose session is lost, interrupted or failed. Each row
-      (48px, 10px radius, filled with `raised`, `hover` on hover, 4px apart) shows the
-      agent (13px medium), the short id, *space / tab* and *resumed 3m ago* in `dim`, the
-      state, an **Auto** / **Auto off** ghost toggle and a solid **Resume**. Clicking the
-      row closes the dialog and focuses that terminal.
-    - **OTHER SESSIONS**: the remaining ones, same rows without the fill or **Resume**. Sessions found
-      through their pid but not remembered say *not remembered* instead of the toggle.
-  - A note line for errors (`ansi1`) or install output (`muted`), on `raised`.
-  - A footer above a `border` line: `✓ Claude Code hooks`, `✓ Codex hooks`, `✓ pi extension`,
-    `✓ omp extension`, `✓ Droid hooks`, `✓ Cursor hooks` (each only when that agent is installed), `✓ shell`,
-    each `muted` with a `ansi2` ✓ when installed and `ansi1` with `✕` when not, and a solid
-    **Install** button while anything is missing.
+- **Dialog** (`mod.open:revive`, 620px wide, as tall as its content, on `popover`). Every
+  color is a theme token, so it follows light and dark themes; a tint is the token with a
+  two-digit hex alpha, as Herdr's own mods do. The sessions scroll once the dialog would
+  pass 85% of the window; the header, the update strip, the note and the footer always
+  show. Icons are Lucide-style strokes in `mods/revive/icons/`, drawn in the text color.
+  - **Header** (20px at the sides, 18px above, 16px below): a 32px tile, 9px radius, in
+    `accent` at 16%, with the logo (`icons/logo.svg`) in `accent`; **Revive** (15px
+    semibold) and the installed version in a 10.5px mono chip on `raised` with a
+    `border`; *Agent sessions, remembered on their terminals* (12px `dim`) under them;
+    an outline **Esc** button on the right that closes the dialog. A 1px `border` line
+    under the header (and under the strips when they show).
+  - **Came-back strip**, when sessions came back lately (`cameBack` in `lib/core.js`:
+    still running, resumed less than 15 minutes ago, automatically or from the dialog):
+    20px in from the sides, 12px radius, `ansi2` at 12% with an `ansi2` 35% border. A
+    28px tile with the logo in `ansi2`; **3 sessions came back** (13px semibold) and *2m
+    ago* (`dim`); under them *Codex in api / 1, pi in web / 2, Claude Code in infra / 1*
+    (up to three, then *and N more*, 11.5px `muted`); a *Dismiss* link on the right. Dismiss
+    saves the newest resume's time in shared state (`revive.cameBack`); a batch no newer
+    than that isn't shown again. It shows above the update strip. Revive can't post this
+    as a notification: a mod runs only while one of its copies is in the shown layout, and
+    a shipped layout takes no new blocks, so it waits for the dialog.
+  - **Update strip**, when a newer release is out (see *Update check*): 20px in from the
+    sides, 12px radius, `accent` at 7% with an `accent` 28% border. A download icon,
+    **Revive v0.7.0 is out** (13px semibold), *you have 0.6.0* (`dim`), a *Stop checking*
+    link on the right; the prompt in an 11px mono box on `background`, cut with an
+    ellipsis, with a small solid **Copy** button; *Paste it to your agent.* (`dim`), and
+    on the right *What changed* (in `accent`, opens the release page) and *Later*.
+  - Sections, titled in 11px medium `dim` capitals, 18px above each title:
+    - **FOCUSED TERMINAL**: a `raised` card with a `border`, 12px radius, 16px padding.
+      The agent's tile (38px, see *Agent tiles*), its name (14px semibold), the first 8
+      characters of the session id (11px mono `dim`), the folder with a folder icon
+      (12px `muted`, the home folder as `~`), and the state on the right (*States*). The
+      carried flags as mono chips on `background`, one per flag with its values. Notes
+      in 12px `dim`. Buttons: for a running agent that forks, a solid **Fork right** `F`
+      and outline **Below** `D` and **New tab** `T`, each with its icon and key; for one
+      that needs you, a solid **Resume** `↵`, and **Copy command** when it can only be
+      resumed by hand. For a running agent that can't fork (Cursor): no fork buttons,
+      and *Cursor can't fork a session.* A Claude Code session with no transcript yet
+      can't be forked: the Fork buttons are disabled, F/D/T do nothing, and the card says
+      *This session has no message yet, so there is nothing to fork. Send it one first.*
+      A session that ran with something Revive doesn't carry (see *Config folders*)
+      can't be forked from the dialog either: *It ran with CLAUDE_CONFIG_DIR: fork it
+      from its own shell.* Neither can one whose folder failed the check: *Its folder is
+      missing, not yours, or writable by others.* A session started before Revive was
+      installed says it can be forked but won't come back by itself; for Claude Code, *…
+      until you remember it*, with an outline **Remember** after the Fork buttons
+      (`revive.mjs adopt T`; *Remembering…* while it runs, and the engine's reason in the
+      note line when it won't). With no message yet it says *nothing to fork or remember*
+      and **Remember** is disabled too; when the engine can't tell the folder it started
+      in, *Revive can't remember it:* and the engine's reason (`rememberWhy`). No key: `R`
+      is Refresh. An agent running
+      with nothing on record gets the same card without an id or buttons, and a note
+      that Revive has no record of it, so it can't be forked or brought back; for Codex
+      the note adds that Codex records a session at its first message, and not at all
+      while its shared background server runs it (`daemon_auto_start`).
+      Without an agent: a dashed `border` card with a terminal icon, *No agent in this
+      terminal* and *Start one here and Revive remembers it from its first message.*
+      (*Looking…* until the first list). On another machine: the same card, *The focused
+      terminal is on another machine* and *Revive works on this computer for now.*
+    - **NEEDS YOU**, with a count in an `ansi3` pill: other terminals whose session is
+      lost, interrupted or failed. Each row (54px, 10px radius, `raised` with a
+      `border`, `hover` on hover, 4px apart): the agent's tile (30px), its name (13px
+      medium) and short id, *space / tab · resumed 3m ago* in `dim`, the state, **Auto**
+      with a switch, and a small solid **Resume**. Clicking the row closes the dialog and
+      focuses that terminal.
+    - **OTHER SESSIONS**: the rest, the same rows (50px) without the fill, border or
+      **Resume**, 2px apart. A session found through its pid but not remembered says
+      *not remembered* instead of the switch, and, when the engine says it can be
+      (`rememberable`), a small ghost **Remember** that does what the card's does.
+  - **Nothing at all** (no session remembered anywhere, no agent in the focused
+    terminal): in place of the sections, centered, a 52px `raised` tile with the logo in
+    `muted`, **No sessions remembered yet** (14px semibold), *Start an agent in a Herdr
+    terminal. Revive remembers its session at the first message and brings it back after
+    a reboot or a core restart.* (12.5px `dim`), and a chip with its tile and name for up
+    to four installed agents (*+N more* after them).
+  - A note line for errors (`ansi1`, on `ansi1` at 8%) or install output (`muted`), 8px
+    radius, above the footer.
+  - **Footer**, under a `border` line, on `chrome`: when everything is installed, a check
+    in `ansi2` and *Ready: Claude Code, Codex, pi, zsh* (each installed agent, then each
+    shell with the block) in `muted`; keys on the right (not in the empty state, where there is nothing to resume or fork): `↵` resume, `F` fork, `R`
+    refresh. When something is missing: on `ansi3` at 7% with an `ansi3` 25% line, an
+    alert icon in `ansi3`, **Setup isn't complete** and what's missing (*pi extension
+    missing · shell block missing*), and a small solid **Install**.
+  - **States**: *Running* in `ansi2`, *Lost to a restart* and *Interrupted* in `ansi3`,
+    *Resume failed* in `ansi1`. A 6px dot and the word (11.5px medium); for the ones
+    that need you, on a 22px pill of the same color at 12%.
+  - **Agent tiles**: the agent's own icon from Herdr's program table (`knownAgents()`,
+    looked up by the agent's key, then its program and report names): `svg(icon)` in
+    its `color` when `tint`, else `image(icon)`, on its `tile` color at 18%, or on
+    `foreground` at 12% when it has none. 27% radius. An agent Herdr doesn't list (or a
+    Herdr without `knownAgents`) gets its initial in `muted` on the same tile.
+  - **Switch**: 32×18, a 14px white knob; `accent` when on, `foreground` at 18% when off.
+  - **Buttons**: solid on `accent` with `accent_foreground` (semibold), outline on
+    `raised` with a `border`, 8px radius, 32px tall (28px small), the key in a 10px mono
+    chip.
 - The list refreshes every 4 seconds while the dialog is open.
-- In a resumed pane, before the agent starts: `↻ Revive: resuming Claude Code session
-  9e458eb4. REVIVE_AUTO=0 skips this.` in dim text. When flags that lift approvals or the
-  sandbox were left out: `↻ Revive: resuming Claude Code session 9e458eb4 without
-  --dangerously-skip-permissions (quit and resume it from the Revive dialog to keep it).
-  REVIVE_AUTO=0 skips this.`
+- In a resumed pane, before the agent starts, one line in ANSI's own colors (so it follows
+  the terminal's theme): `↻ Revive` in bold blue, `  resuming `, the agent's name in
+  bold, ` session 9e458eb4`, and ` · REVIVE_AUTO=0 skips this` dim. When flags that lift
+  approvals or the sandbox were left out, a second line in yellow: `  without
+  --dangerously-skip-permissions (only a resume from the Revive dialog keeps it)`.
+  Both are `printfLine` (`lib/core.js`): the texts are `printf` arguments, never its
+  format.
 
 ## The files
 
@@ -93,8 +174,10 @@ real reboot yet.
 | --- | --- |
 | `mods/revive/main.js` | The dialog |
 | `mods/revive/lib/core.js` | Agents (the `AGENTS` table), flags, hook payloads, labels, states and the resume script: plain functions shared by the dialog and the engine |
-| `mods/revive/lib/sessions.js` | Engine only: finding a running agent's session from the files it writes, for one nobody recorded |
-| `mods/revive/revive.mjs` | The engine, run with the person's Node: hooks, the shell check, list, resume, install |
+| `mods/revive/icons/*.svg` | The dialog's icons (logo, folder, fork, copy, alert, …): Lucide-style strokes in `currentColor` |
+| `mods/revive/lib/update.js` | Dialog only: the installed `VERSION` and the daily check for a newer release |
+| `mods/revive/lib/sessions.js` | Engine only: finding a running agent's session from the files it writes, for one nobody recorded, and the folder a Claude Code one started in |
+| `mods/revive/revive.mjs` | The engine, run with the person's Node: hooks, the shell check, list, resume, adopt, install |
 | `mods/revive/lib/extension.js` | Extensions only: what pi's and omp's extensions share (running `revive.mjs hook` one at a time, the SIGTERM/SIGHUP listener) |
 | `mods/revive/pi/revive.ts` | pi's extension: runs `revive.mjs hook` at pi's session start and end, with Claude Code's payload |
 | `mods/revive/omp/revive.ts` | omp's extension: the same for omp, which has its own extension folder and events |
@@ -192,7 +275,8 @@ A running agent nobody recorded is found from its files: Claude Code by
 `~/.factory/sessions/<cwd, every non-alphanumeric a dash>/` written since the agent started;
 Cursor by the newest `<id>/` (folder or its `store.db`) in `~/.cursor/chats/<md5 of the
 cwd>/` written since then; Copilot CLI by the `~/.copilot/session-state/<id>/` that holds
-`inuse.<its pid>.lock`. Codex, pi and omp: not found.
+`inuse.<its pid>.lock`. Codex, pi and omp: not found. `adopt` records a Claude Code one
+from the same file (see *Rules*); the others are only shown.
 
 Checked by hand with droid 1.1.0 and cursor-agent 2026.10.22 on macOS: Droid reports
 `droid` to Herdr; its SessionStart hook records the session and its flags; `droid --auto
@@ -271,6 +355,29 @@ record and resumed the session.
 - The folder a record names is used only as the person's own: `cd` goes to its real
   path (links resolved), and only when it is an existing folder that belongs to this
   user and that others can't write to. Otherwise the record's folder is refused.
+- `adopt` writes the labels a `SessionStart` would have for a running Claude Code session
+  nobody recorded (one started before Revive was installed), from the agent's own process
+  only: the id from its own `sessions/<pid>.json` in this user's Claude folder (as `list`
+  finds it), through `validId`; the flags from its live command line, through the carry
+  list; the folder it started in, from its transcript, which must pass the check above. A
+  label is only asked whether a record exists: nothing in one can make adopt write
+  anything, it grants nothing new, and what it writes is read back like a hook's record.
+- `adopt` records Claude Code only. Droid's and Cursor's session is the newest file in
+  their folder's store, a guess good enough to show but not to keep; Codex, pi and omp
+  aren't found at all.
+- `adopt` skips a terminal with a record, another machine's, a one-shot run, a session it
+  can't find, one already on record in another terminal or found in two (it would come
+  back in two panes), and one whose folder it can't tell or that fails the check.
+- The folder is the one the session started in, which its hook records and `--resume`
+  needs: `sessions/<pid>.json` and the terminal hold the folder it is in now, which can
+  move. It is the `cwd` of the first entry in its transcript that has one, and must be
+  the folder the transcript is filed under (`projects/<folder, every non-alphanumeric a
+  dash>/`). It is never taken from that name, which can't be turned back into a path
+  (`/a/my-proj` and `/a/my/proj` are both `-a-my-proj`). A session with no transcript has
+  no message yet, so nothing to resume, and is skipped.
+- `adopt` records `CLAUDE_CONFIG_DIR` as a need (by name) when it is set in its own
+  environment: the session was found in the folder it names, so the agent ran with it.
+  `--dry-run` prints the `hc label` it would run and writes nothing.
 - The agent is known by the command line the hook sent (pi, omp), then the foreground command
   line, then the agent process the hook came from, then the hook's `--agent`, then the
   payload (its transcript path, Cursor's `cursor_version`), and only then the terminal's
@@ -302,9 +409,9 @@ record and resumed the session.
   (for Claude Code, pi and omp) the session's transcript exists. Without a transcript the
   record is dropped. A failed resume is not retried at every restart; **Resume** in the
   dialog still tries it.
-- When only the folder or an unmet need stops it, `check` says so once, in dim text
-  (`↻ Revive: not resuming Claude Code session 9e458eb4: it was started with
-  CLAUDE_CONFIG_DIR. Resume it by hand (Revive dialog).`), and marks the terminal
+- When only the folder or an unmet need stops it, `check` says so once (`↻ Revive` in
+  bold yellow, then `  not resuming Claude Code session 9e458eb4: it was started with
+  CLAUDE_CONFIG_DIR.` and, dim, ` Resume it by hand from the Revive dialog.`), and marks the terminal
   `revive.failed`, so the next shell stays quiet.
 - **Resume** in the dialog refuses a record whose folder failed the check, and names the
   folder (*Won't resume: its folder ~/w is missing, not yours, or writable by others.*).
@@ -320,6 +427,10 @@ record and resumed the session.
   this process's folder. Otherwise it says `null` and the fork is let through, since an
   agent started with a `CLAUDE_CONFIG_DIR` the app doesn't have keeps its transcripts
   elsewhere. A folder or variable named in a label is never taken as proof.
+- For a running Claude Code session nobody recorded, `list` also says `rememberable`:
+  true when `adopt` can tell the folder it started in, false with `rememberWhy` when it
+  can't. Other agents get neither, and the dialog offers no **Remember** for them. The
+  dialog's **Remember** runs `adopt T`, which checks everything again.
 - `check` marks the terminal (`shell`, `since`, `resumed`) before printing, so a second
   shell can't resume the same session again.
 - The shell block runs what `check` printed at the first prompt (zsh: a one-time `precmd`
@@ -334,8 +445,19 @@ record and resumed the session.
 - Fork opens `terminal.open {argv, folder, place}` with the agent's fork command:
   `claude … --resume <id> --fork-session`, `codex fork … <id>`, `pi … --fork <id>`,
   `omp … --fork <id>`, `droid … --fork <id>`. An agent with no fork (Cursor, Copilot CLI) gets no fork buttons or keys.
+  A Claude Code session nobody recorded is forked in the folder it started in, as `adopt`
+  finds it, or the one it is in now when that can't be told.
 - pi's and omp's transcript check is the recorded session file: it exists, or the session never got
   a message. A record without one is let through.
+- Install ends by counting the running sessions `adopt` could remember (`adopt
+  --dry-run`), and says how many, pointing to `adopt`. It never adopts: it runs on every
+  update and from the dialog's **Install**, and changes nothing but its own files.
+  Uninstall doesn't count. In a Herdr terminal it asks `hc` only while that terminal's
+  herdr-core answers (an `hc` that finds no core starts one); elsewhere (the dialog's
+  **Install**) as `list` does. A failure is a warning; the install still succeeds.
+- `doctor` adds the same count as `unremembered`, or null when `hc` wasn't asked or
+  failed. The dialog's setup (`list --setup`) leaves it out: the dialog lists the
+  sessions itself.
 - Install writes an agent's hooks only into the file it reads now, and takes Revive's
   out of every other file it may be in (Droid's `settings.json` once a `hooks.json`
   exists). The shell block works the same way: one file per shell, and a bash block an
@@ -343,6 +465,33 @@ record and resumed the session.
   `.bashrc`) is taken out when bash's is written. A file without Revive in it is never
   rewritten by install or uninstall.
 - Hooks never fail an agent: every error is swallowed and the exit code is 0.
+- Under `herdr-app check` (Herdr's `checking()`, 0.1.16 and later) the dialog draws but
+  runs nothing: no engine, no refresh, no update check. `checking` is read from the
+  `herdr` module rather than imported by name, so an older Herdr, which has no such
+  export, still loads the mod.
+
+## Update check
+
+- Only the dialog checks, when it opens, and at most once a day: one GET to
+  `https://api.github.com/repos/dmazlum/herdr-revive/releases/latest`, with no token and
+  nothing about the person, their sessions or their folders. The engine and the hooks
+  never touch the network.
+- The result is kept in Herdr's shared state under `revive.update` (`checked`, `latest:
+  {tag, url}`, `dismissed`, `off`, `repo`), so it lasts across restarts and every copy of
+  the dialog sees it. The time is saved before asking, so two dialogs don't both ask. A
+  result saved for another repository counts as never checked; `off` holds for any.
+- A release is offered when its tag (`v1.2.3`) is newer than `VERSION` in
+  `lib/update.js`, which must equal `package.json`'s and `mod.json`'s version (a test
+  checks it). A tag of another shape offers nothing until the next day's check; a
+  failed request or no network offers nothing and is tried again an hour later. A saved
+  check time in the future (a clock that was wrong) counts as long ago.
+- **What changed** opens the release's page only if it is on
+  `https://github.com/dmazlum/herdr-revive/`; otherwise the releases page.
+- **Later** hides that release until a newer one; **Stop checking** sets `off` for
+  good. `CHECK = false` in `lib/update.js` turns it off before it ever asks (an update
+  puts it back).
+- A release bumps the version in `package.json`, `mods/revive/mod.json` and
+  `mods/revive/lib/update.js`, and is tagged `v<version>`.
 
 ## Settings
 
