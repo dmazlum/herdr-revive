@@ -32,7 +32,7 @@ real reboot yet.
    `~/.bash_login`, `~/.profile`, on Linux `~/.bashrc`), keeping the original of each as
    `.revive-backup`. Only one bash file keeps the block: an older one in another of them
    (a Linux login file, from an earlier version) is taken out. If they use both zsh and bash, add
-   `--zsh --bash`; `--no-codex`, `--no-pi`, `--no-omp`, `--no-droid`, `--no-cursor`, `--no-copilot` skip
+   `--zsh --bash`; `--no-codex`, `--no-pi`, `--no-omp`, `--no-droid`, `--no-cursor`, `--no-copilot`, `--no-muse` skip
    an agent. pi loads its extension the next time it starts or at `/reload`, omp only
    the next time it starts. On Windows the shell file is PowerShell's
    `$PROFILE.CurrentUserCurrentHost`, for `pwsh` if it is installed, else for Windows
@@ -202,7 +202,7 @@ A session is remembered as labels on its herdr-core terminal:
 
 | Label | Value |
 | --- | --- |
-| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid`, `cursor` or `copilot` |
+| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid`, `cursor`, `copilot` or `muse` |
 | `revive.session` | The session id |
 | `revive.cwd` | The folder the session ran in |
 | `revive.flags` | The carried launch flags, as a JSON array |
@@ -227,7 +227,7 @@ names, as needs, and a `--session-dir` in their `revive.flags` counts as a need 
 ## Agents
 
 One entry each in `AGENTS` (`lib/core.js`), one hook target in `HOOK_TARGETS`
-(`revive.mjs`; pi and omp: an extension in `EXTENSIONS`), and optionally a finder in `lib/sessions.js`: that is all an agent needs.
+(`revive.mjs`; pi and omp: an extension in `EXTENSIONS`; Muse: its plugin, `installMuse`), and optionally a finder in `lib/sessions.js`: that is all an agent needs.
 
 | Agent | Known by | Resume | Fork | Hooks installed into | Session id from | Carried flags |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -238,6 +238,7 @@ One entry each in `AGENTS` (`lib/core.js`), one hook target in `HOOK_TARGETS`
 | Droid | `droid`; report `droid` | `droid … --resume <id>` | `droid … --fork <id>` | `~/.factory/hooks.json` (event map, no `hooks` wrapper) if it exists, else `hooks` in `~/.factory/settings.json`; command `… hook --agent droid` | `session_id` | `--auto`, `--use-spec`, `--disable-builtin-skills` (interactive flags only: `--skip-permissions-unsafe`, `-m` and the reasoning/tool flags are `droid exec` only, and interactive droid reads them as the prompt) |
 | Cursor | `cursor-agent`, or `agent`/`node`/`index.js` under a `cursor` or `cursor-agent` folder; report `cursor`, `cursor-agent` | `cursor-agent … --resume <id>` | none | `~/.cursor/hooks.json`: `{"version": 1, "hooks": {"sessionStart": [{"command": …}], "sessionEnd": […]}}`, no timeout; command `… hook --agent cursor` | `conversation_id`; folder from `workspace_roots[0]` | `-f`/`--force`, `--yolo`, `--model` (it has no `-m`), `--sandbox`, `--mode`, `--plan` |
 | Copilot CLI | `copilot` as the first word, or the second after `node`/`bun`/`deno` (never `gh copilot`); report `copilot` | `copilot … --resume <id>` | none (`/fork` inside only) | its own file `~/.copilot/hooks/herdr-revive.json` (`$COPILOT_HOME/hooks/`): `{"version": 1, "hooks": {"SessionStart": [{"type": "command", "bash": …, "timeoutSec": 10}], "SessionEnd": […]}}`, deleted whole on uninstall; command `… hook --agent copilot` | `session_id` | `--model`, `--mode`, `--plan`, `--autopilot`, `--reasoning-effort`, `--max-autopilot-continues`, `--agent` (a name only), `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--deny-tool`, `--allow-url`, `--deny-url`, `--available-tools`, `--excluded-tools`, `--no-ask-user`, `--experimental`, `--no-experimental`, `--disable-builtin-mcps`, `--disable-mcp-server`, `--no-custom-instructions`, `--disallow-temp-dir`, `--screen-reader`, `--plain-diff`, `--no-mouse` |
+| Muse | `muse`, or the versioned binary it execs (`muse-bin-<version>`), as the first word only; report `muse` | `muse … resume <id>` | none | a plugin bundle written to `mods/revive/muse-plugin/` and installed with `muse plugins install … --scope user`, then `muse plugins approve herdr-revive`; each hook a script of its own (Muse refuses two hooks with one source); command `… hook --agent muse`; loads only when `HC_TERMINAL_ID` is set | `session_id`; terminal found from the process tree (no `HC_TERMINAL_ID` in its hooks) | `--model`, `--reasoning-effort`, `--effort`, `--approval-mode` |
 
 Everything else on the command line is left behind: a first prompt, `--resume` itself,
 a secret (`--api-key`, Cursor's `-H`). A value flag whose value is missing, looks like
@@ -263,6 +264,7 @@ can write, and they come back unattended after a reboot.
   - omp: `--auto-approve`, `--plan-yolo`, `--approval-mode` (any value)
   - Droid: `--auto`
   - pi: `-a`/`--approve`
+  - Muse: `--approval-mode` other than `untrusted` or `on-request`
 - Value flags that pick something by name take a plain name only, never a path: Codex's
   and omp's `--profile`, Claude Code's `--agent` (an agent definition, `plugin:name`
   allowed), omp's `--skills` (comma-separated names).
@@ -288,7 +290,7 @@ A running agent nobody recorded is found from its files: Claude Code by
 `~/.factory/sessions/<cwd, every non-alphanumeric a dash>/` written since the agent started;
 Cursor by the newest `<id>/` (folder or its `store.db`) in `~/.cursor/chats/<md5 of the
 cwd>/` written since then; Copilot CLI by the `~/.copilot/session-state/<id>/` that holds
-`inuse.<its pid>.lock`. Codex, pi and omp: not found. `adopt` records a Claude Code one
+`inuse.<its pid>.lock`. Codex, pi, omp and Muse: not found (`muse sessions --json` lists no process ids). `adopt` records a Claude Code one
 from the same file (see *Rules*); the others are only shown.
 
 Checked by hand with droid 1.1.0 and cursor-agent 2026.10.22 on macOS: Droid reports
@@ -321,6 +323,21 @@ Copilot in the foreground may be resuming the session, so it is kept; so is anyt
 doubt. `abort`, `error` and `timeout` keep it. Checked by hand on macOS 26.7: with a
 Copilot session open, a core restart (`hc server restart`) and a real reboot each kept the
 record and resumed the session.
+
+Checked by hand with muse 1.4.24 on macOS, with a throwaway plugin that recorded its hooks'
+input, environment and parent processes: the plugin's `SessionStart` and `SessionEnd` get
+Claude Code's snake_case input (captured in `test/fixtures/muse/`). `SessionStart` fires at a
+session's first answer (`source: "startup"`) and at the first message after `muse resume <id>`
+(`source: "resume"`). `/exit` sends `SessionEnd` with reason `other`; SIGHUP sends none. The
+hooks run as children of the `muse-bin-<version>` process in the terminal's foreground (the
+`muse` launcher execs it), with a reduced environment: no `HC_TERMINAL_ID` and no
+`HC_TERMINAL_SOCKET`, but `MUSE_SESSION_ID`, `MUSE_THREAD_ID` and the plugin's own variables.
+So the hook installed for Muse (`hook --agent muse`, and only that one) finds its terminal: the
+live one whose foreground pid `hookOwner` reaches from the hook, the same walk that then checks
+it. The plugin's `when` (`envPresent: HC_TERMINAL_ID`, judged in Muse's own environment) keeps it
+out of any session outside an hc terminal, so `hc` never starts a core for it. `other` is
+settled as Copilot's `user_exit` is. `muse plugins validate` accepts the bundle install writes.
+Not checked yet: a real reboot with a Muse session open.
 
 ## Rules
 

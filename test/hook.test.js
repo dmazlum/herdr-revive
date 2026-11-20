@@ -21,7 +21,7 @@ const ID = "0c8b28eb-1111-4222-8333-444455556666";
  * The foreground is the fake agent (FAKE_FG), or state.json's `fg` once a test
  * puts another process there.
  */
-function setup({ labels = {}, app = null, argv = ["claude", "--model", "opus", "fix it"], bin = "claude" } = {}) {
+function setup({ labels = {}, app = null, argv = ["claude", "--model", "opus", "fix it"], bin = "claude", hookArgs = "" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "revive-hook-"));
   writeFileSync(join(dir, "state.json"), JSON.stringify({ labels, app, argv }));
   const hc = join(dir, "hc");
@@ -29,7 +29,9 @@ function setup({ labels = {}, app = null, argv = ["claude", "--model", "opus", "
 const fs = require("fs"), dir = ${JSON.stringify(dir)};
 const [cmd, t, ...rest] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
-if (cmd === "get") {
+if (cmd === "ls") {
+  console.log(JSON.stringify({ terminals: [{ address: "t1" }] }));
+} else if (cmd === "get") {
   const fg = state.fg ?? Number(process.env.FAKE_FG);
   let argv = state.argv;
   if (fg) {
@@ -49,7 +51,7 @@ if (cmd === "get") {
   const agent = (name) => {
     const path = join(dir, name, bin);
     mkdirSync(join(dir, name));
-    writeFileSync(path, `#!/bin/sh\n[ -z "$FAKE_FG" ] && export FAKE_FG=$$\nif [ -n "$NESTED" ]; then NESTED= sh -c "\\"$NESTED\\"; true"; else node ${JSON.stringify(ENGINE)} hook; fi\n`);
+    writeFileSync(path, `#!/bin/sh\n[ -z "$FAKE_FG" ] && export FAKE_FG=$$\nif [ -n "$NESTED" ]; then NESTED= sh -c "\\"$NESTED\\"; true"; else node ${JSON.stringify(ENGINE)} hook ${hookArgs}; fi\n`);
     chmodSync(path, 0o755);
     return path;
   };
@@ -782,4 +784,86 @@ test("manual Resume accepts a wrapper's idle child shell, including a stale agen
 
 test("a shell started by hand inside the terminal's own shell doesn't resume", POSIX_HARNESS, () => {
   assert.equal(wrapped({ marked: true }), "");
+});
+
+// ── Muse ────────────────────────────────────────────────────────────────────
+
+// Muse's hooks run without HC_TERMINAL_ID: the one installed for Muse finds
+// its terminal from the process tree.
+const MUSE_ID = "01a1f4d6-1e4d-7322-9f7b-c29ea7491e16";
+const museFixture = (name) => JSON.parse(readFileSync(resolve("test/fixtures/muse", `${name}.json`), "utf8"));
+const muse = { bin: "muse-bin-1.4.24-R9131.1", argv: ["/Users/me/.local/bin/muse-bin-1.4.24-R9131.1", "--model", "m1", "--approval-mode", "never", "--workspace", "/x", "fix it"], hookArgs: "--agent muse" };
+const museRec = { ...remembered, "revive.agent": "muse", "revive.session": MUSE_ID };
+const noTerminalId = (env = {}) => ({ env: { HC_TERMINAL_ID: "", ...env } });
+
+test("Muse's SessionStart is remembered on the terminal whose foreground runs it, without HC_TERMINAL_ID", POSIX_HARNESS, () => {
+  const { run, calls, set } = setup(muse);
+  run(museFixture("session-start"), noTerminalId());
+  const got = set(calls());
+  assert.equal(calls()[0][0], "revive.agent=muse");
+  assert.equal(got["revive.agent"], "muse");
+  assert.equal(got["revive.session"], MUSE_ID);
+  assert.equal(got["revive.cwd"], "/w");
+  assert.equal(got["revive.flags"], '["--model","m1","--approval-mode","never"]');
+});
+
+test("Muse's resume SessionStart keeps the record and its resumed mark", POSIX_HARNESS, () => {
+  const { run, calls, set } = setup({ ...muse, argv: ["/Users/me/.local/bin/muse-bin-1.4.24-R9131.1", "resume", MUSE_ID], labels: { ...museRec, "revive.resumed": "123" } });
+  run(museFixture("session-start-resume"), noTerminalId());
+  const got = set(calls());
+  assert.equal(got["revive.session"], MUSE_ID);
+  assert.equal(got["revive.resumed"], "123");
+});
+
+test("only the hook installed for Muse looks for its terminal; any other still needs HC_TERMINAL_ID", POSIX_HARNESS, () => {
+  const other = setup({ ...muse, hookArgs: "" });
+  other.run(museFixture("session-start"), noTerminalId());
+  assert.deepEqual(other.calls(), []);
+  const claude = setup({ hookArgs: "--agent claude" });
+  claude.run(start, noTerminalId());
+  assert.deepEqual(claude.calls(), []);
+});
+
+test("Muse's hook records nothing when no terminal runs it in its foreground", POSIX_HARNESS, () => {
+  const { run, calls, state } = setup(muse);
+  state({ fg: deadPid() });
+  run(museFixture("session-start"), noTerminalId());
+  assert.deepEqual(calls(), []);
+});
+
+test("Muse's /exit (other) forgets the session once its shell outlives it; a hangup keeps it", POSIX_HARNESS, () => {
+  const exit = setup({ ...muse, labels: museRec });
+  exit.state({ fg: deadPid() });
+  exit.run(museFixture("session-end-exit"), noTerminalId(settle(process.pid).env));
+  assert.deepEqual(exit.calls(), [], "no foreground agent: the hook can't tell whose it is");
+  const kept = setup({ ...muse, labels: museRec });
+  kept.run(museFixture("session-end-exit"), noTerminalId(settle(deadPid()).env));
+  assert.deepEqual(kept.calls(), [], "the shell died with it: a reboot or a core restart");
+  const cleared = setup({ ...muse, labels: museRec });
+  cleared.run(museFixture("session-end-exit"), noTerminalId(settle(process.pid).env));
+  assert.equal(cleared.set(cleared.calls())["revive.session"], "", "the same Muse still there: the person ended this session");
+});
+
+test("Muse's captured hook input reads like Claude Code's", () => {
+  const started = hookPayload(museFixture("session-start"));
+  assert.equal(started.event, "SessionStart");
+  assert.equal(started.session, MUSE_ID);
+  assert.equal(started.cwd, "/w");
+  assert.equal(started.agent, null);
+  const ended = hookPayload(museFixture("session-end-exit"));
+  assert.equal(ended.event, "SessionEnd");
+  assert.equal(ended.reason, "other");
+});
+
+test("a Muse that a tool call runs below the foreground Muse doesn't own the terminal", () => {
+  const bin = "/Users/me/.local/bin/muse-bin-1.4.24-R9131.1";
+  const table = new Map([
+    [10, { ppid: 9, argv: ["node", "/x/revive.mjs", "hook", "--agent", "muse"] }],
+    [9, { ppid: 8, argv: [bin, "exec", "x"] }],
+    [8, { ppid: 7, argv: ["sh", "-c", "muse exec x"] }],
+    [7, { ppid: 6, argv: [bin, "fix it"] }],
+    [6, { ppid: 1, argv: ["-zsh"] }],
+  ]);
+  assert.equal(hookOwner(table, 9, 7).owned, false);
+  assert.deepEqual(hookOwner(table, 7, 7), { owned: true, agent: 7 });
 });

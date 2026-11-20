@@ -3,8 +3,8 @@
 // the machine is rebooting, so the work happens where the session lives:
 //
 //   revive.mjs hook [--agent K]   an agent's SessionStart and SessionEnd (Claude Code, Codex,
-//                                 Droid, Cursor, Copilot CLI, pi's through pi/revive.ts and omp's through
-//                                 omp/revive.ts): remember the
+//                                 Droid, Cursor, Copilot CLI, Muse's through its plugin, pi's through
+//                                 pi/revive.ts and omp's through omp/revive.ts): remember the
 //                                 session on its terminal, or forget it
 //   revive.mjs check --shell PID  from the shell's rc file: print the commands that
 //                                 resume a session lost to a restart, or nothing
@@ -19,7 +19,7 @@
 //                                 nobody recorded (started before Revive was
 //                                 installed), or only T's; --dry-run says what
 //                                 it would write
-//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor] [--no-copilot]
+//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor] [--no-copilot] [--no-muse]
 //   revive.mjs uninstall
 //   revive.mjs doctor             what is installed, as JSON
 //
@@ -38,6 +38,7 @@ import {
   isPowerShell, resumeScriptPwsh, notResumingLine, parseWinProcesses, psQuote, canRestore,
 } from "./lib/core.js";
 import { agentDirs, claudeProject, claudeStartFolder, findSession } from "./lib/sessions.js";
+import { VERSION } from "./lib/update.js";
 
 const run = promisify(execFile);
 
@@ -200,18 +201,28 @@ async function hook(args = []) {
   // REVIVE_DEBUG=1 in the agent's environment: why a hook recorded nothing, on stderr.
   const skip = (why) => { if (process.env.REVIVE_DEBUG) process.stderr.write(`revive hook: ${why}\n`); };
   const payload = hookPayload(await readStdin());
-  const t = process.env.HC_TERMINAL_ID;
+  let t = process.env.HC_TERMINAL_ID;
   const { event, session } = payload;
-  if (!t || !validId(session)) return skip(!t ? "not in a herdr terminal" : "no valid session id");
+  // Muse's hooks don't get HC_TERMINAL_ID (see terminalOfHook).
+  const lookup = !t && hintOf(args) === "muse";
+  if ((!t && !lookup) || !validId(session)) return skip(!t && !lookup ? "not in a herdr terminal" : "no valid session id");
   // The agent ends when the core stops, and its SessionEnd comes after: with
   // no core, there is no label to change, and `hc` would start a new core.
   if (!(await coreUp())) return skip("herdr-core is not up");
-  const terminal = await getTerminal(t);
+  let table = null;
+  let terminal;
+  if (t) terminal = await getTerminal(t);
+  else {
+    table = await processes();
+    terminal = await terminalOfHook(table);
+    if (!terminal) return skip("no herdr terminal runs this hook's agent in its foreground");
+    t = terminal.address;
+  }
   // The hook must belong to the agent in the terminal's foreground, not to a
   // `claude -p` that agent ran as a tool (it inherits HC_TERMINAL_ID too).
   const target = terminal.foreground?.pid ?? terminal.pid;
   if (!target) return skip("no foreground process");
-  const table = await processes();
+  table ??= await processes();
   const owner = hookOwner(table, process.ppid, target);
   if (!owner.owned) return skip(`not the foreground agent's hook (from ${process.ppid} to ${target}, ${table.size} processes)`);
   const rec = readRecord(terminal.labels);
@@ -276,6 +287,24 @@ async function hook(args = []) {
   }
 }
 
+/**
+ * The terminal a hook's agent runs in, for an agent whose hooks don't get
+ * HC_TERMINAL_ID: Muse runs them with a reduced environment. Its plugin loads
+ * only inside an hc terminal (the bundle's `when`), so a core is there to ask.
+ * The terminal is the live one whose foreground process this hook descends
+ * from, by the same walk the check after it makes (hookOwner): a tool call's
+ * agent below the foreground one still counts as not owned. Only the hook
+ * installed for Muse (`--agent muse`) looks; every other hook still needs
+ * HC_TERMINAL_ID.
+ */
+async function terminalOfHook(table) {
+  for (const t of await listTerminals()) {
+    const target = t.foreground?.pid ?? t.pid;
+    if (target && hookOwner(table, process.ppid, target).owned) return t;
+  }
+  return null;
+}
+
 const settleMs = () => {
   const ms = Number(process.env.REVIVE_SETTLE_MS ?? 1500);
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
@@ -307,22 +336,23 @@ const alive = (pid) => {
 
 /**
  * For a SessionEnd whose reason can't tell the person's exit from a signal
- * (Copilot CLI's `user_exit`): whether the terminal outlived the agent, so
- * the person ended it. A core restart or a reboot closes the terminal, which
- * hangs up its shell, or stops the core; `/exit` leaves the shell at its
- * prompt. After REVIVE_SETTLE_MS, the core must still be up, the terminal live
- * with the same shell, and the same session on record. Copilot still in the
- * foreground as the same process (`agentPid`) means `/clear`: the person ended
- * this session for a new one. Another Copilot there may be resuming it, so it
- * stays. Any doubt keeps it.
+ * (Copilot CLI's `user_exit`, Muse's `other`): whether the terminal outlived
+ * the agent, so the person ended it. A core restart or a reboot closes the
+ * terminal, which hangs up its shell, or stops the core; `/exit` leaves the
+ * shell at its prompt. After REVIVE_SETTLE_MS, the core must still be up, the
+ * terminal live with the same shell, and the same session on record. The same
+ * agent still in the foreground as the same process (`agentPid`) means
+ * `/clear`: the person ended this session for a new one. Another process of
+ * that agent there may be resuming it, so it stays. Any doubt keeps it.
  */
 async function outlived(t, pid, session, agentPid) {
   await new Promise((resolve) => setTimeout(resolve, settleMs()));
   if (!(await coreUp())) return false;
   const now = await getTerminal(t).catch(() => null);
   if (!now || now.state !== "live" || !pid || now.pid !== pid || !alive(now.pid)) return false;
-  if (readRecord(now.labels)?.session !== session) return false;
-  return liveAgent(now) !== "copilot" || now.foreground?.pid === agentPid;
+  const rec = readRecord(now.labels);
+  if (rec?.session !== session) return false;
+  return liveAgent(now) !== rec.agent || now.foreground?.pid === agentPid;
 }
 
 // ── records read back ───────────────────────────────────────────────────────
@@ -794,6 +824,85 @@ const cursorDir = () => agentDirs({ ...process.env, HOME: homedir(), USERPROFILE
 const copilotHooks = () => join(copilotDir(), "hooks", "herdr-revive.json");
 
 /**
+ * Muse has no hooks file either: its hooks come from a plugin bundle, which
+ * `muse plugins install` copies into Muse's own cache, so the bundle can't find
+ * the engine from its place. Install writes the bundle into the mod, naming
+ * the engine by its full path, then installs and trusts it (`muse plugins
+ * install`, `approve`). Each hook has a script of its own: Muse refuses a
+ * bundle whose two hooks share one source. The plugin loads only inside an hc
+ * terminal (`when`), like Muse's own Herdr plugin. REVIVE_MUSE: another `muse`,
+ * for tests. Not on Windows: unchecked there.
+ */
+const MUSE_PLUGIN = "herdr-revive";
+const museCli = () => process.env.REVIVE_MUSE || "muse";
+// REVIVE_MUSE set but empty: no Muse (tests on a machine that has one).
+const musePresent = () => !IS_WIN && (process.env.REVIVE_MUSE !== undefined ? process.env.REVIVE_MUSE !== "" : hasCli("muse"));
+const museBundle = () => join(dirname(ENGINE), "muse-plugin");
+const MUSE_HOOKS = { SessionStart: "session_start.sh", SessionEnd: "session_end.sh" };
+
+/** The bundle's files, by path inside it. */
+export function museBundleFiles(engine = ENGINE, version = VERSION) {
+  const script = `#!/bin/sh\n# herdr-revive: Muse hook, written by revive.mjs install. Muse runs it from its plugin cache.\nexec node ${shQuote(engine)} hook --agent muse\n`;
+  const manifest = {
+    schemaVersion: 1,
+    name: MUSE_PLUGIN,
+    displayName: "Herdr Revive",
+    version,
+    description: "Remembers this Muse session on its herdr-core terminal, so Revive can bring it back after a restart or reboot.",
+    compat: { source: "native", manifestDir: ".muse-plugin" },
+    when: { anyOf: [{ envPresent: "HC_TERMINAL_ID" }] },
+    capabilities: {
+      hooks: Object.entries(MUSE_HOOKS).map(([event, file]) => ({
+        id: `revive-${event === "SessionStart" ? "start" : "end"}`, event, command: ["sh", `hooks/${file}`], timeoutMs: 10000,
+      })),
+    },
+  };
+  return {
+    ".muse-plugin/plugin.json": JSON.stringify(manifest, null, 2) + "\n",
+    ...Object.fromEntries(Object.values(MUSE_HOOKS).map((file) => [`hooks/${file}`, script])),
+  };
+}
+
+const muse = (...args) => execFileSync(museCli(), args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+
+/** Revive's Muse plugin: null when it isn't installed, else whether both hooks are trusted and enabled. */
+function museState() {
+  let out;
+  try { out = muse("plugins", "inspect", MUSE_PLUGIN); } catch { return null; }
+  return { trusted: (out.match(/status=trusted_enabled/g) ?? []).length >= Object.keys(MUSE_HOOKS).length };
+}
+
+/**
+ * Installs Revive's Muse plugin, or with remove takes it out. Returns whether
+ * anything changed. A plugin already installed from the same bundle, trusted,
+ * is left as it is; a changed bundle (another engine path, a new version)
+ * replaces it.
+ */
+function installMuse(remove) {
+  const dir = museBundle();
+  const state = museState();
+  if (remove) {
+    if (state) muse("plugins", "remove", MUSE_PLUGIN, "--delete-data");
+    const had = existsSync(dir);
+    rmSync(dir, { recursive: true, force: true });
+    return Boolean(state) || had;
+  }
+  let wrote = false;
+  for (const [name, text] of Object.entries(museBundleFiles())) {
+    const path = join(dir, name);
+    if (readText(path) === text) continue;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+    wrote = true;
+  }
+  if (state?.trusted && !wrote) return false;
+  if (state) muse("plugins", "remove", MUSE_PLUGIN);
+  muse("plugins", "install", dir, "--scope", "user");
+  muse("plugins", "approve", MUSE_PLUGIN);
+  return true;
+}
+
+/**
  * Whether a CLI is installed: on PATH, or in ~/.local/bin, where the Droid and
  * cursor-agent installers put it, or in `extra` folders. The Herdr app may run Revive with a shorter
  * PATH than the person's shell has, hence the fallback.
@@ -1248,6 +1357,15 @@ async function install(args, remove = false) {
       }
     } catch (err) { warnings.push(err.message); }
   }
+  // Muse: a plugin of Revive's own, through Muse's CLI.
+  if (!args.includes("--no-muse") && musePresent()) {
+    try {
+      if (installMuse(remove)) {
+        changed.push(museBundle());
+        if (!remove) notes.push("Muse loads the plugin the next time a session starts.");
+      }
+    } catch (err) { warnings.push(`Couldn't ${remove ? "remove" : "install"} the Muse plugin: ${String(err?.stderr || err?.message || err).trim().split("\n")[0]}`); }
+  }
   if (!args.includes("--no-shell")) {
     const kindOf = (rc) => Object.keys(RC).find((k) => RC[k]() === rc) ?? null;
     for (const rc of remove ? ALL_RC() : shells(args).map((s) => RC[s]()).filter(Boolean)) {
@@ -1348,6 +1466,7 @@ export function doctorReport() {
     engine: ENGINE,
     ...hooks,
     ...Object.fromEntries(EXTENSION_AGENTS.map((key) => [key, existsSync(EXTENSIONS[key].dir()) ? safe(() => isExtension(key, extensionPath(key))) : null])),
+    muse: musePresent() ? Boolean(museState()?.trusted) : null,
     shell: Object.fromEntries(Object.entries(RC).map(([s, rc]) => [s, safe(() => { const f = rc(); return Boolean(f) && readText(f).includes(BEGIN); })])),
   };
   // Windows: whether PowerShell runs a profile at all (see executionPolicy).

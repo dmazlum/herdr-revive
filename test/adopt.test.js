@@ -25,6 +25,8 @@ const SHELL = process.pid;
 const since = WINDOWS ? "" : execFileSync("ps", ["-o", "lstart=", "-p", String(SHELL)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim().split(/\s+/).join(" ");
 
 const base = { ...process.env };
+// Install must not reach a real muse on the test machine: an empty REVIVE_MUSE means no Muse.
+base.REVIVE_MUSE = "";
 for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "REVIVE_SHELL", "ZDOTDIR"]) delete base[k];
 
 /** A temporary home, a fake hc and helpers to add terminals and agent files. */

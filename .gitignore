@@ -7,3 +7,6 @@ CLAUDE.md
 # Written by herdr-app on check/load
 mods/*/gpui-kit.d.ts
 mods/*/jsconfig.json
+
+# Written by revive.mjs install: the Muse plugin bundle, with this machine's engine path
+mods/revive/muse-plugin/

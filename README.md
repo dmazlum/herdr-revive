@@ -16,7 +16,7 @@ conversation, the same model and flags. There's nothing to type and nothing runn
 background. While an agent is live, one key forks its conversation into a new pane beside
 it.
 
-Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **pi** and **omp**.
+Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **Muse**, **pi** and **omp**.
 
 ![Revive](preview.png)
 
@@ -42,6 +42,7 @@ Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, *
 | [Factory Droid](https://docs.factory.com) (`droid`) | experimental | `droid --resume <id>` | `droid --fork <id>` | hooks |
 | [Cursor CLI](https://cursor.com/docs/cli/overview) (`cursor-agent`) | experimental | `cursor-agent --resume <id>` | no fork | hooks |
 | [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109 and 1.0.111) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
+| Muse (`muse`) | experimental (tested with muse 1.4.24 on macOS; not on Windows) | `muse resume <id>` | no fork | plugin |
 
 What "experimental" means for each one is under [Limits](#limits).
 
@@ -96,6 +97,7 @@ only in a resume you start from the dialog:
 | Copilot CLI | `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--allow-url` |
 | omp | `--auto-approve`, `--plan-yolo`, `--approval-mode` |
 | Droid | `--auto` |
+| Muse | `--approval-mode` other than `untrusted` or `on-request` |
 | pi | `-a`/`--approve` |
 
 A label can be written by any program that talks to herdr-core, including an agent running
@@ -210,8 +212,10 @@ Each agent is set up only when it looks installed:
 | Droid | The two hooks in `~/.factory/hooks.json` if you have one, else in the `hooks` key of `~/.factory/settings.json` (Droid reads that one only while there is no `hooks.json`). Droid warns that its hooks changed and shows them in `/hooks`. |
 | Cursor | `sessionStart` and `sessionEnd` in `~/.cursor/hooks.json`. A `~/.cursor` folder alone doesn't count as installed, since the Cursor editor makes one and reads that `hooks.json` too. |
 | Copilot CLI | `SessionStart` and `SessionEnd` in a file of its own, `~/.copilot/hooks/herdr-revive.json` (Copilot reads every `*.json` there); `uninstall` deletes it. A `~/.copilot` folder alone doesn't count as installed, since the Copilot app and editors make one too. On Windows each entry also has a `powershell` command, the one Copilot runs there. |
+| Muse | A plugin bundle, `herdr-revive`, written into `mods/revive/muse-plugin/` (its two hook scripts name the engine by its full path, since Muse runs them from a copy in its own cache), then `muse plugins install … --scope user` and `muse plugins approve herdr-revive`. It loads only inside an hc terminal. `uninstall` runs `muse plugins remove herdr-revive --delete-data` and deletes the bundle. Muse loads it the next time a session starts. Not on Windows. |
 
 Droid's, Cursor's and Copilot CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot`.
+Muse's plugin runs `revive.mjs hook --agent muse`.
 
 Last, it says how many Claude Code sessions already running in your Herdr terminals
 aren't remembered (the ones started before Revive was installed), and points to
@@ -252,7 +256,7 @@ How it treats your files:
 ```sh
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --pwsh --powershell   # Windows: both PowerShells
-node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot
+node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot, --no-muse
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code sessions already running
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt                  # remember them
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
@@ -461,6 +465,25 @@ flags, `--session`/`--fork` or how it ends on a signal.
 - No fork from the dialog: Copilot CLI has no fork flag. Use `/fork` inside the session.
 - `gh copilot` (gh's own command) is not recognized; the `copilot` CLI is, also as
   `node …/copilot` from npm.
+
+### Muse
+
+- Checked by hand with muse 1.4.24 on macOS: the plugin's hooks get Claude Code's input.
+  `SessionStart` comes at a session's first answer (`source: "startup"`) and again at the
+  first message after `muse resume <id>` (`source: "resume"`), so a session you never sent
+  a message has no record. Not yet checked: a real reboot with a Muse session open.
+- Muse runs its hooks with a reduced environment, without `HC_TERMINAL_ID`. The hook
+  installed for Muse (`--agent muse`) finds its terminal instead: the live one whose
+  foreground process the hook descends from, by the same check every hook makes. The
+  plugin loads only inside an hc terminal, so a core is there to ask.
+- `/exit` sends `SessionEnd` with reason `other`, and a hangup (a reboot, a core restart)
+  sends none. Revive settles `other` as it does Copilot's `user_exit`: after
+  `REVIVE_SETTLE_MS` it forgets the session only if the terminal still has the same, living
+  shell.
+- The `muse` launcher execs a versioned binary (`muse-bin-<version>`), which is what the
+  terminal's foreground shows; both names count, only as the program itself.
+- A running Muse session started before Revive was installed is not found from its files:
+  `muse sessions --json` lists no process ids. It records itself at its next start.
 
 ### Windows
 

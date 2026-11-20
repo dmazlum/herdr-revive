@@ -393,7 +393,62 @@ export const AGENTS = {
       "--allow-url": true,
     },
   },
+  // Muse, checked against muse 1.4.24 on macOS: its hooks come from a plugin
+  // bundle (see revive.mjs), and get Claude Code's input. SessionStart fires
+  // at a session's first answer (source "startup") and at the first message
+  // after `muse resume <id>` (source "resume"), with `session_id` and `cwd`.
+  // The `muse` launcher execs a versioned binary (`muse-bin-1.4.24-R9131.1`),
+  // which is what the terminal's foreground shows. It has no fork on the
+  // command line. Its hooks run with a reduced environment, without
+  // HC_TERMINAL_ID: the engine finds the terminal from the process tree.
+  muse: {
+    name: "Muse",
+    bin: "muse",
+    match: (word) => {
+      const name = base(word);
+      return name === "muse" || /^muse-bin-[0-9]/.test(name);
+    },
+    apps: ["muse"],
+    // A short, common word: only as the program itself.
+    argv0Only: true,
+    resume: (id, flags) => ["muse", ...flags, "resume", id],
+    fork: null,
+    // /exit sends "other", and so might anything else that ends it; a hangup
+    // (a core restart, a reboot) sends no SessionEnd at all. "other" can't
+    // tell the person's exit from a signal, so it is settled by whether the
+    // terminal outlived Muse. clear and resume start another session in the
+    // same process, as in Claude Code.
+    end: (reason) => (reason === "clear" || reason === "resume" ? "ignore" : "settle"),
+    oneShot: museOneShot,
+    carry: {
+      "--model": 1,
+      "--reasoning-effort": 1,
+      "--effort": 1,
+      "--approval-mode": 1,
+    },
+    // never: tools run without asking. Anything other than Muse's asking modes is left out.
+    unattended: { "--approval-mode": unless("untrusted", "on-request") },
+  },
 };
+
+/** Muse's subcommands that run once and quit, with no session to resume (`muse resume` is not one). */
+const MUSE_COMMANDS = new Set(["exec", "config", "export", "trace", "model-profile", "skills", "voice", "plugins", "sandbox", "schema", "serve", "mxp", "attach", "acp", "session-message", "sessions", "mcp", "auth", "login", "logout", "usage", "init"]);
+// Muse accepts its options on either side of a subcommand. Skip their values
+// too: a model named `exec` is still an interactive launch.
+const MUSE_VALUE_FLAGS = new Set([
+  "--agents", "--provider", "--preset", "--model", "-c", "--config", "--contributor-mode", "--reasoning-effort", "--effort",
+  "--base-url", "--image", "--workspace", "--worktree-base", "--worktree-existing", "--approval-mode",
+]);
+function museOneShot(args) {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (word === "--") return false;
+    if (MUSE_VALUE_FLAGS.has(word)) { i++; continue; }
+    if (word.startsWith("-")) continue;
+    return MUSE_COMMANDS.has(word);
+  }
+  return false;
+}
 
 /** Copilot CLI's subcommands: each runs once and quits, with no session to resume. */
 const COPILOT_COMMANDS = new Set(["login", "logout", "help", "init", "config", "update", "version", "workflow", "sessions", "memories", "plugin", "mcp", "skill", "instruction", "lsp", "sandbox", "completion", "app"]);

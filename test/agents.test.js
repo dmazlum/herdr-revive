@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentKey, carriedFlags, command, canFork, hookPayload, endAction, isOneShot } from "../mods/revive/lib/core.js";
+import { agentKey, carriedFlags, attendedFlags, command, canFork, hookPayload, endAction, isOneShot } from "../mods/revive/lib/core.js";
 
 const ID = "5f1d6a52-8c39-4a0e-9b0d-2a7c1e9f0b11";
 
@@ -174,4 +174,48 @@ test("copilot -p, --acp and its subcommands answer and quit", () => {
   assert.equal(isOneShot("copilot", ["copilot", "login"]), true);
   assert.equal(isOneShot("copilot", ["copilot", "--model", "gpt-5"]), false);
   assert.equal(isOneShot("copilot", ["copilot", "-i", "fix it"]), false);
+});
+
+test("muse is known by its launcher, its versioned binary and its report, never as an argument", () => {
+  assert.equal(agentKey(null, ["muse"]), "muse");
+  assert.equal(agentKey(null, ["/Users/me/.local/bin/muse", "--model", "m"]), "muse");
+  assert.equal(agentKey(null, ["/Users/me/.local/bin/muse-bin-1.4.24-R9131.1", "resume", ID]), "muse");
+  assert.equal(agentKey("muse"), "muse");
+  assert.equal(agentKey(null, ["vim", "muse"]), null);
+  assert.equal(agentKey(null, ["museum"]), null);
+  assert.equal(agentKey(null, ["muse-bin"]), null);
+});
+
+test("muse carries its model, effort and approval mode, and never a workspace, config or preset", () => {
+  assert.deepEqual(carriedFlags("muse", ["muse", "--model", "m1", "--reasoning-effort", "high", "--workspace", "/x", "-c", "k=v", "--preset", "miniswe", "--approval-mode", "on-request", "fix it"]),
+    ["--model", "m1", "--reasoning-effort", "high", "--approval-mode", "on-request"]);
+  assert.deepEqual(carriedFlags("muse", ["muse-bin-1.4.24-R1", "--effort", "max", "resume", ID]), ["--effort", "max"]);
+});
+
+test("muse's approval mode never comes back unattended", () => {
+  assert.deepEqual(attendedFlags("muse", ["--model", "m1", "--approval-mode", "never"]), { kept: ["--model", "m1"], dropped: ["--approval-mode never"] });
+  assert.deepEqual(attendedFlags("muse", ["--approval-mode", "on-request"]), { kept: ["--approval-mode", "on-request"], dropped: [] });
+});
+
+test("muse resumes with `muse resume <id>` and has no fork", () => {
+  const rec = { agent: "muse", session: ID, flags: ["--model", "m1", "--approval-mode", "never"] };
+  assert.deepEqual(command(rec), ["muse", "--model", "m1", "--approval-mode", "never", "resume", ID]);
+  assert.deepEqual(command(rec, "resume", { unattended: true }), ["muse", "--model", "m1", "resume", ID]);
+  assert.equal(command(rec, "fork"), null);
+  assert.equal(canFork("muse"), false);
+});
+
+test("muse's SessionEnd is settled, except a clear or resume inside it", () => {
+  assert.equal(endAction("muse", "other"), "settle");
+  assert.equal(endAction("muse", "logout"), "settle");
+  assert.equal(endAction("muse", "clear"), "ignore");
+  assert.equal(endAction("muse", "resume"), "ignore");
+});
+
+test("muse's subcommands answer and quit; resume and a first prompt don't", () => {
+  assert.equal(isOneShot("muse", ["muse", "exec", "fix it"]), true);
+  assert.equal(isOneShot("muse", ["muse", "--model", "m1", "sessions", "--json"]), true);
+  assert.equal(isOneShot("muse", ["muse", "--model", "exec", "fix it"]), false, "a model named exec");
+  assert.equal(isOneShot("muse", ["muse-bin-1.4.24-R1", "resume", ID]), false);
+  assert.equal(isOneShot("muse", ["muse", "fix the tests"]), false);
 });
