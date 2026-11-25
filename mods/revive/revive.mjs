@@ -3,9 +3,9 @@
 // the machine is rebooting, so the work happens where the session lives:
 //
 //   revive.mjs hook [--agent K]   an agent's SessionStart and SessionEnd (Claude Code, Codex,
-//                                 Droid, Cursor, Copilot CLI, Muse's through its plugin, pi's through
-//                                 pi/revive.ts and omp's through omp/revive.ts): remember the
-//                                 session on its terminal, or forget it
+//                                 Droid, Cursor, Copilot CLI, Antigravity CLI, Muse's through
+//                                 its plugin, pi's through pi/revive.ts and omp's through
+//                                 omp/revive.ts): remember the session on its terminal, or forget it
 //   revive.mjs check --shell PID  from the shell's rc file: print the commands that
 //                                 resume a session lost to a restart, or nothing
 //   revive.mjs failed             the resume printed by `check` gave up at once
@@ -19,7 +19,7 @@
 //                                 nobody recorded (started before Revive was
 //                                 installed), or only T's; --dry-run says what
 //                                 it would write
-//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor] [--no-copilot] [--no-muse]
+//   revive.mjs install [--zsh] [--bash] [--no-shell] [--no-codex] [--no-pi] [--no-omp] [--no-droid] [--no-cursor] [--no-copilot] [--no-agy] [--no-muse]
 //   revive.mjs uninstall
 //   revive.mjs doctor             what is installed, as JSON
 //
@@ -235,6 +235,11 @@ async function hook(args = []) {
     if (!terminal) return skip("no herdr terminal runs this hook's agent in its foreground");
     t = terminal.address;
   }
+  const rec = readRecord(terminal.labels);
+  // agy has no SessionEnd; Stop records a session that has no record yet (started before install or whose SessionStart timed out), and exits early once recorded before scanning processes().
+  const agyStop = event === "Stop" && hintOf(args) === "agy";
+  if (agyStop && rec?.session === session) return;
+
   // The hook must belong to the agent in the terminal's foreground, not to a
   // `claude -p` that agent ran as a tool (it inherits HC_TERMINAL_ID too).
   const target = terminal.foreground?.pid ?? terminal.pid;
@@ -242,9 +247,8 @@ async function hook(args = []) {
   table ??= await processes();
   const owner = hookOwner(table, process.ppid, target);
   if (!owner.owned) return skip(`not the foreground agent's hook (from ${process.ppid} to ${target}, ${table.size} processes)`);
-  const rec = readRecord(terminal.labels);
 
-  if (event === "SessionStart") {
+  if (event === "SessionStart" || agyStop) {
     // The command line: the foreground's (exact words), else the agent
     // process the hook came from, when a wrapper with another name runs it.
     const fgArgv = terminal.foreground?.argv ?? terminal.argv ?? [];
@@ -286,6 +290,8 @@ async function hook(args = []) {
       // "resumed" mark; a new one starts without.
       resumed: same ? rec.resumed : null,
     }));
+    // agy has no SessionEnd: a detached waiter settles the record when agy exits.
+    if (key === "agy") watchLater(t, terminal.pid, session, owner.agent ?? target);
     return;
   }
 
@@ -349,6 +355,46 @@ async function settleLater(t, pid, session, agentPid) {
 }
 
 const isPid = (s) => /^[1-9][0-9]*$/.test(s ?? "");
+
+/**
+ * For an agent with no SessionEnd event (Antigravity CLI), a detached waiter
+ * that polls `agentPid` every REVIVE_WATCH_MS and settles the record via
+ * `outlived` once it exits: a living terminal with the same shell means the
+ * person exited, while a reboot or core stop takes the waiter or shell down
+ * and keeps the record.
+ */
+const watchMs = () => {
+  const ms = Number(process.env.REVIVE_WATCH_MS ?? 5000);
+  return Number.isFinite(ms) && ms > 0 ? ms : 5000;
+};
+const watchStamp = (agentPid) => join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "herdr-revive", "watch", String(agentPid));
+function activeWatch(stamp) {
+  const [pid, session] = readText(stamp).trim().split("\n");
+  return isPid(pid) && validId(session) && alive(Number(pid)) ? { pid: Number(pid), session } : null;
+}
+function watchLater(t, pid, session, agentPid) {
+  if (!pid || !agentPid) return;
+  if (activeWatch(watchStamp(agentPid))?.session === session) return;
+  spawn(process.execPath, [ENGINE, "watch", t, session, String(pid), String(agentPid)], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+}
+async function watch([t, session, pid, agentPid] = []) {
+  if (!t || !validId(session) || !isPid(pid) || !isPid(agentPid)) return;
+  const stamp = watchStamp(agentPid);
+  const mine = `${process.pid}\n${session}\n`;
+  mkdirSync(dirname(stamp), { recursive: true });
+  writeFileSync(stamp, mine);
+  let superseded = false;
+  try {
+    while (alive(Number(agentPid))) {
+      await new Promise((resolve) => setTimeout(resolve, watchMs()));
+      if (readText(stamp) !== mine) { superseded = true; return; }
+    }
+    if (readText(stamp) !== mine) { superseded = true; return; }
+  } finally {
+    if (readText(stamp) === mine) rmSync(stamp, { force: true });
+  }
+  if (!superseded) await settle([t, session, pid, agentPid]);
+}
 
 async function settle([t, session, pid, agentPid] = []) {
   if (!t || !validId(session) || !isPid(pid) || !isPid(agentPid)) return;
@@ -1260,6 +1306,30 @@ export function withCopilotHooks(doc, { remove = false, win = IS_WIN } = {}) {
 }
 export const hasCopilotHooks = (doc) => EVENTS.every((e) => (doc?.hooks?.[e] ?? []).some(isOursCopilot));
 
+/**
+ * Antigravity CLI's `~/.gemini/config/hooks.json` maps group names directly to
+ * events, with no `hooks` wrapper (a top-level `hooks` key would load as a
+ * group named "hooks"). Revive owns the `revive` group, running at SessionStart
+ * and Stop (Stop records sessions that started before install or whose
+ * SessionStart timed out, and exits early once recorded).
+ */
+const AGY_GROUP = "revive";
+const AGY_TIMEOUT = 30;
+const AGY_EVENTS = ["SessionStart", "Stop"];
+export function withAgyHooks(doc, { remove = false } = {}) {
+  const out = structuredClone(doc ?? {});
+  const command = hookCommand("agy");
+  const right = AGY_EVENTS.every((e) => {
+    const ours = out[AGY_GROUP]?.[e] ?? [];
+    return ours.length === 1 && ours[0].command === command && ours[0].timeout === AGY_TIMEOUT;
+  });
+  if (!remove && right && Object.keys(out[AGY_GROUP] ?? {}).length === AGY_EVENTS.length) return out;
+  delete out[AGY_GROUP];
+  if (!remove) out[AGY_GROUP] = Object.fromEntries(AGY_EVENTS.map((e) => [e, [{ type: "command", command, timeout: AGY_TIMEOUT }]]));
+  return out;
+}
+export const hasAgyHooks = (doc) => AGY_EVENTS.every((e) => (doc?.[AGY_GROUP]?.[e] ?? []).some(isOurs));
+
 /** `kind`: the shell whose file it is; PowerShell's get pwshBlock, zsh's and bash's shellBlock. */
 export function withShellBlock(text, { remove = false, kind = null } = {}) {
   if (remove && !text.includes(BEGIN)) return text;
@@ -1398,6 +1468,15 @@ const HOOK_TARGETS = {
     files: () => [copilotHooks()],
     edit: (d, o) => withCopilotHooks(d, o),
     has: hasCopilotHooks,
+  },
+  // Antigravity IDE also writes ~/.gemini: require the `agy` CLI.
+  agy: {
+    dir: () => join(homedir(), ".gemini", "config"),
+    present: () => hasCli("agy", IS_WIN ? [join(homedir(), "AppData", "Local", "agy", "bin")] : []),
+    flag: "--no-agy",
+    files: () => [join(homedir(), ".gemini", "config", "hooks.json")],
+    edit: (d, o) => withAgyHooks(d, o),
+    has: hasAgyHooks,
   },
 };
 const targetOf = (h) => (h.target ?? ((files) => files[0]))(h.files());
@@ -1578,8 +1657,10 @@ export function doctorReport() {
 // ── main ────────────────────────────────────────────────────────────────────
 
 const COMMANDS = {
-  hook: { run: (a) => hook(a), quiet: true },
+  // agy expects a JSON object on a hook's stdout regardless of outcome.
+  hook: { run: async (a) => { try { await hook(a); } finally { if (hintOf(a) === "agy") process.stdout.write("{}\n"); } }, quiet: true },
   settle: { run: (a) => settle(a), quiet: true },
+  watch: { run: (a) => watch(a), quiet: true },
   check: { run: check, quiet: true },
   failed: { run: failed, quiet: true },
   list: { run: list },

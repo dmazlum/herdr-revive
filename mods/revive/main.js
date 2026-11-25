@@ -496,7 +496,9 @@ export default class Revive extends View {
       ? "Revive has no record of this session, so it can't be forked or brought back. Codex records it at its first message, and not at all while its shared background server runs it (daemon_auto_start)."
       : entry.live === "copilot"
         ? "Revive has no record of this session, so it can't be brought back. Copilot CLI records it at its first message."
-        : "Revive has no record of this session, so it can't be forked or brought back. It is recorded when it starts once Revive is installed.";
+        : entry.live === "agy"
+          ? "Revive has no record of this session, so it can't be brought back. Antigravity CLI records it at its first message."
+          : "Revive has no record of this session, so it can't be forked or brought back. It is recorded when it starts once Revive is installed.";
     return v_flex().gap(12).p(16).rounded(12).bg(t.raised).border_1().border_color(t.border)
       .child(h_flex().gap(12).items_start()
         .child(this.agentTile(t, entry.live, 38))

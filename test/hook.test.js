@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, symlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, realpathSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseProcesses, hasTranscript } from "../mods/revive/revive.mjs";
@@ -35,6 +35,7 @@ if (cmd === "ls") {
 } else if (cmd === "get" && extra[t]) {
   console.log(JSON.stringify({ address: t, state: "live", labels: {}, ...extra[t] }));
 } else if (cmd === "get") {
+  fs.appendFileSync(dir + "/gets.log", t + "\\n");
   const fg = state.fg ?? Number(process.env.FAKE_FG);
   let argv = state.argv;
   if (fg) {
@@ -66,13 +67,14 @@ if (cmd === "ls") {
     env: { ...base, HC_TERMINAL_ID: "t1", REVIVE_HC: hc, NESTED: nested ? inner : "", FAKE_FG: "", ...env },
   });
   const calls = () => (existsSync(join(dir, "labels.log")) ? readFileSync(join(dir, "labels.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
+  const gets = () => (existsSync(join(dir, "gets.log")) ? readFileSync(join(dir, "gets.log"), "utf8").trim().split("\n") : []);
   const set = (calls) => Object.fromEntries(calls.flat().map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
   const state = (patch) => {
     const file = join(dir, "state.json");
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ...patch }));
   };
   const targets = () => (existsSync(join(dir, "targets.log")) ? readFileSync(join(dir, "targets.log"), "utf8").trim().split("\n") : []);
-  return { run, calls, set, state, targets };
+  return { run, calls, gets, set, state, targets, dir };
 }
 
 const start = { hook_event_name: "SessionStart", session_id: ID, cwd: "/w", source: "startup" };
@@ -899,4 +901,172 @@ test("a Muse that a tool call runs below the foreground Muse doesn't own the ter
   ]);
   assert.equal(hookOwner(table, 9, 7).owned, false);
   assert.deepEqual(hookOwner(table, 7, 7), { owned: true, agent: 7 });
+});
+
+// ── Antigravity CLI (agy) ───────────────────────────────────────────────────
+
+test("agy hook prints {} on stdout even outside a Herdr terminal", () => {
+  const out = execFileSync(process.execPath, [ENGINE, "hook", "--agent", "agy"], {
+    input: JSON.stringify({ hookEventName: "SessionStart", conversationId: ID }),
+    encoding: "utf8",
+    env: { ...base, HC_TERMINAL_ID: "" },
+  });
+  assert.equal(out, "{}\n");
+});
+
+const agyStart = {
+  hookEventName: "SessionStart",
+  conversationId: ID,
+  workspacePaths: ["/w"],
+  transcriptPath: `/Users/me/.gemini/antigravity-cli/brain/${ID}/.system_generated/logs/transcript.jsonl`,
+};
+const agyStop = { ...agyStart, hookEventName: "Stop" };
+
+test("agy SessionStart records camelCase payload with workspacePaths fallback and prints {}", POSIX_HARNESS, () => {
+  const agy = setup({ bin: "agy", argv: ["agy", "--model", "gemini-4", "--dangerously-skip-permissions"], app: "antigravity", hookArgs: "--agent agy" });
+  const stdout = agy.run(agyStart).toString("utf8");
+  assert.equal(stdout, "{}\n");
+  const got = agy.set(agy.calls());
+  assert.equal(got["revive.agent"], "agy");
+  assert.equal(got["revive.session"], ID);
+  assert.equal(got["revive.cwd"], "/w");
+  assert.equal(got["revive.flags"], '["--model","gemini-4","--dangerously-skip-permissions"]');
+});
+
+test("agy Stop records an unrecorded session and returns early once recorded without scanning processes", POSIX_HARNESS, () => {
+  const unrecorded = setup({ bin: "agy", argv: ["agy", "--model", "gemini-4"], app: "antigravity", hookArgs: "--agent agy" });
+  assert.equal(unrecorded.run(agyStop, { env: { XDG_STATE_HOME: unrecorded.dir } }).toString("utf8"), "{}\n");
+  assert.equal(unrecorded.set(unrecorded.calls())["revive.session"], ID);
+
+  // Even when fg no longer owns the hook, Stop returns immediately after reading labels (no hookOwner/processes debug output).
+  const already = setup({
+    bin: "agy",
+    argv: ["agy", "--model", "gemini-4"],
+    app: "antigravity",
+    hookArgs: "--agent agy",
+    labels: { ...remembered, "revive.agent": "agy", "revive.session": ID },
+  });
+  already.state({ fg: deadPid() });
+  const stopped = spawnSync(join(already.dir, "outer", "agy"), [], {
+    input: JSON.stringify(agyStop),
+    encoding: "utf8",
+    env: { ...base, HC_TERMINAL_ID: "t1", REVIVE_HC: join(already.dir, "hc"), FAKE_FG: "", REVIVE_DEBUG: "1" },
+  });
+  assert.equal(stopped.status, 0);
+  assert.equal(stopped.stdout, "{}\n");
+  assert.equal(stopped.stderr, "");
+  assert.deepEqual(already.calls(), []);
+});
+
+test("agy -p leaves any remembered session alone and still prints {}", POSIX_HARNESS, () => {
+  const oneShot = setup({
+    bin: "agy",
+    argv: ["agy", "-p", "hi"],
+    app: "antigravity",
+    hookArgs: "--agent agy",
+    labels: { ...remembered, "revive.agent": "agy", "revive.session": ID },
+  });
+  assert.equal(oneShot.run({ ...agyStart, conversationId: "11111111-2222-4333-8444-555566667777" }).toString("utf8"), "{}\n");
+  assert.deepEqual(oneShot.calls(), []);
+});
+
+test("agy detached watcher settles when agy exits and its shell survives, and keeps on hangup", POSIX_HARNESS, async () => {
+  const agyRec = { ...remembered, "revive.agent": "agy", "revive.session": ID };
+  const agyOpts = { bin: "agy", argv: ["agy"], app: "antigravity", hookArgs: "--agent agy", labels: agyRec };
+  // Once outer's hook finishes, FAKE_FG (outer's pid) has exited, so watch sees it dead and settles via outlived.
+  const exited = setup(agyOpts);
+  exited.run(agyStart, { env: { REVIVE_WATCH_MS: "50", REVIVE_SETTLE_MS: "150", FAKE_PID: String(process.pid), XDG_STATE_HOME: exited.dir } });
+  const initialCalls = exited.calls().length;
+  for (let i = 0; i < 60 && exited.calls().length <= initialCalls; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(exited.calls().length > initialCalls, "watcher clears the session after agy exits");
+  assert.equal(exited.set([exited.calls().at(-1)])["revive.session"], "");
+
+  // When the terminal's shell died too (reboot / core restart), watch runs settle (hc get) and keeps the record.
+  const reboot = setup(agyOpts);
+  reboot.run(agyStart, { env: { REVIVE_WATCH_MS: "50", REVIVE_SETTLE_MS: "100", FAKE_PID: String(deadPid()), XDG_STATE_HOME: reboot.dir } });
+  const afterHookGets = reboot.gets().length;
+  const rebootCalls = reboot.calls().length;
+  const watchDir = join(reboot.dir, "herdr-revive", "watch");
+  const stampGone = () => !existsSync(watchDir) || readdirSync(watchDir).length === 0;
+  for (let i = 0; i < 60 && (reboot.gets().length <= afterHookGets || !stampGone()); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(reboot.gets().length > afterHookGets, "watcher ran outlived check before asserting");
+  assert.ok(stampGone(), "watcher exited after settle");
+  assert.equal(reboot.calls().length, rebootCalls, "hangup leaves the remembered session intact");
+});
+
+test("agy reuses the watcher for the same session and supersedes it when switching conversations", POSIX_HARNESS, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "revive-agy-dedup-"));
+  const S2 = "11111111-2222-4333-8444-555566667777";
+  const hc = join(dir, "hc");
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ labels: {} }));
+  writeFileSync(hc, `#!/usr/bin/env node
+const fs = require("fs"), dir = ${JSON.stringify(dir)};
+const [cmd, t, ...rest] = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
+if (cmd === "get") {
+  console.log(JSON.stringify({ address: t, state: "live", pid: ${process.pid}, cwd: "/w", labels: state.labels,
+    status: { app: "antigravity", state: "working" },
+    foreground: { pid: Number(process.env.AGY_PID), argv: ["agy"], cwd: "/w" } }));
+} else if (cmd === "label") {
+  const patch = Object.fromEntries(rest.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
+  state.labels = { ...state.labels, ...patch };
+  fs.writeFileSync(dir + "/state.json", JSON.stringify(state));
+}
+`);
+  chmodSync(hc, 0o755);
+  const agyScript = join(dir, "agy");
+  writeFileSync(agyScript, `#!/bin/sh
+export AGY_PID=$$
+node ${JSON.stringify(ENGINE)} hook --agent agy <<EOF
+${JSON.stringify(agyStart)}
+EOF
+while [ ! -f ${JSON.stringify(join(dir, "step2"))} ]; do sleep 0.05; done
+node ${JSON.stringify(ENGINE)} hook --agent agy <<EOF
+${JSON.stringify(agyStart)}
+EOF
+touch ${JSON.stringify(join(dir, "step2.done"))}
+while [ ! -f ${JSON.stringify(join(dir, "step3"))} ]; do sleep 0.05; done
+node ${JSON.stringify(ENGINE)} hook --agent agy <<EOF
+${JSON.stringify({ ...agyStart, conversationId: S2 })}
+EOF
+touch ${JSON.stringify(join(dir, "step3.done"))}
+while [ ! -f ${JSON.stringify(join(dir, "exit"))} ]; do sleep 0.05; done
+`);
+  chmodSync(agyScript, 0o755);
+  const child = execFile(agyScript, [], { env: { ...base, HC_TERMINAL_ID: "t1", REVIVE_HC: hc, REVIVE_WATCH_MS: "50", REVIVE_SETTLE_MS: "50", XDG_STATE_HOME: dir } });
+  const watchDir = join(dir, "herdr-revive", "watch");
+  const alivePid = (p) => { try { process.kill(p, 0); return true; } catch { return false; } };
+  try {
+    let stampFile = null;
+    for (let i = 0; i < 60 && !stampFile; i++) {
+      const entries = existsSync(watchDir) ? readdirSync(watchDir) : [];
+      if (entries.length) stampFile = join(watchDir, entries[0]);
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(stampFile, "watcher wrote its state file");
+    const [pid1, ses1] = readFileSync(stampFile, "utf8").trim().split("\n");
+    assert.equal(ses1, ID);
+    writeFileSync(join(dir, "step2"), "");
+    for (let i = 0; i < 60 && !existsSync(join(dir, "step2.done")); i++) await new Promise((r) => setTimeout(r, 50));
+    const [pidAfterSame] = readFileSync(stampFile, "utf8").trim().split("\n");
+    assert.equal(pidAfterSame, pid1, "same session reuses the existing watcher");
+    writeFileSync(join(dir, "step3"), "");
+    for (let i = 0; i < 60 && !existsSync(join(dir, "step3.done")); i++) await new Promise((r) => setTimeout(r, 50));
+    let pid2 = pid1;
+    for (let i = 0; i < 60 && pid2 === pid1; i++) {
+      pid2 = readFileSync(stampFile, "utf8").trim().split("\n")[0];
+      if (pid2 === pid1) await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.notEqual(pid2, pid1, "new conversation starts a replacement watcher");
+    for (let i = 0; i < 40 && alivePid(Number(pid1)); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alivePid(Number(pid1)), false, "superseded watcher exits cleanly");
+    writeFileSync(join(dir, "exit"), "");
+    await new Promise((r) => child.once("close", r));
+    for (let i = 0; i < 60 && (existsSync(stampFile) || JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).labels["revive.session"] !== ""); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).labels["revive.session"], "", "active watcher settles new session on exit");
+  } finally {
+    child.kill();
+  }
 });

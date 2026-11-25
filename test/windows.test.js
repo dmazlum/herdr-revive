@@ -38,6 +38,7 @@ test("Windows program paths are recognized: backslashes, .exe and npm's shims, a
   assert.equal(agentKey(null, ["C:\\Windows\\System32\\OpenSSH\\ssh.exe", "pi"]), null);
   assert.equal(agentKey(null, ["C:\\Users\\me\\AppData\\Local\\cursor-agent\\versions\\1\\agent.exe"]), "cursor");
   assert.equal(agentKey(null, ["C:\\tools\\agent.exe"]), null, "a bare `agent` outside a Cursor folder is not Cursor");
+  assert.equal(agentKey(null, ["C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.EXE", "--model", "m"]), "agy");
   // POSIX words are read as before: case matters there.
   assert.equal(agentKey(null, ["/usr/local/bin/claude"]), "claude");
   assert.equal(agentKey(null, ["/usr/local/bin/Claude"]), null);
@@ -98,6 +99,7 @@ test("hook payloads with Windows paths still say which agent sent them", () => {
   assert.equal(hookPayload({ transcript_path: "C:\\Users\\me\\.claude\\projects\\C--x\\a.jsonl" }).agent, "claude");
   assert.equal(hookPayload({ transcript_path: "C:\\Users\\me\\.codex\\sessions\\a.jsonl" }).agent, "codex");
   assert.equal(hookPayload({ transcript_path: "C:\\Users\\me\\.pi\\agent\\sessions\\a.jsonl" }).agent, "pi");
+  assert.equal(hookPayload({ transcriptPath: "C:\\Users\\me\\.gemini\\antigravity-cli\\brain\\id\\.system_generated\\logs\\transcript.jsonl" }).agent, "agy");
 });
 
 // ── PowerShell quoting and the resume script ─────────────────────────────────

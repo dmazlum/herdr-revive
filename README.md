@@ -16,7 +16,7 @@ conversation, the same model and flags. There's nothing to type and nothing runn
 background. While an agent is live, one key forks its conversation into a new pane beside
 it.
 
-Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **Muse**, **pi** and **omp**.
+Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **Antigravity CLI**, **Muse**, **pi** and **omp**.
 
 ![Revive](preview.png)
 
@@ -42,6 +42,7 @@ Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, *
 | [Factory Droid](https://docs.factory.com) (`droid`) | experimental | `droid --resume <id>` | `droid --fork <id>` | hooks |
 | [Cursor CLI](https://cursor.com/docs/cli/overview) (`cursor-agent`) | experimental | `cursor-agent --resume <id>` | no fork | hooks |
 | [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109 and 1.0.111) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
+| Antigravity CLI (`agy`) | experimental (tested with agy 1.5.13 on Windows) | `agy --conversation <id>` | no fork | hooks |
 | Muse (`muse`) | experimental (tested with muse 1.4.24 on macOS; not on Windows) | `muse resume <id>` | no fork | plugin |
 
 What "experimental" means for each one is under [Limits](#limits).
@@ -95,6 +96,7 @@ only in a resume you start from the dialog:
 | Codex | `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`, `-a never`, `-s danger-full-access` |
 | Cursor | `-f`/`--force`, `--yolo`, `--sandbox` other than `enabled` |
 | Copilot CLI | `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--allow-url` |
+| Antigravity CLI | `--dangerously-skip-permissions`, `--mode` other than `plan` |
 | omp | `--auto-approve`, `--plan-yolo`, `--approval-mode` |
 | Droid | `--auto` |
 | Muse | `--approval-mode` other than `untrusted` or `on-request` |
@@ -205,6 +207,8 @@ Each agent is set up only when it looks installed:
   `~/.local/share/cursor-agent` exists.
 - Copilot CLI: `~/.copilot` (or `COPILOT_HOME`) exists and the `copilot` CLI is on `PATH`,
   in `~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`.
+- Antigravity CLI: the `agy` CLI is on `PATH`, in `~/.local/bin`, or (on Windows) in
+  `~\AppData\Local\agy\bin`.
 
 | Agent | What it adds |
 | --- | --- |
@@ -215,9 +219,10 @@ Each agent is set up only when it looks installed:
 | Droid | The two hooks in `~/.factory/hooks.json` if you have one, else in the `hooks` key of `~/.factory/settings.json` (Droid reads that one only while there is no `hooks.json`). Droid warns that its hooks changed and shows them in `/hooks`. |
 | Cursor | `sessionStart` and `sessionEnd` in `~/.cursor/hooks.json`. A `~/.cursor` folder alone doesn't count as installed, since the Cursor editor makes one and reads that `hooks.json` too. |
 | Copilot CLI | `SessionStart` and `SessionEnd` in a file of its own, `~/.copilot/hooks/herdr-revive.json` (Copilot reads every `*.json` there); `uninstall` deletes it. A `~/.copilot` folder alone doesn't count as installed, since the Copilot app and editors make one too. On Windows each entry also has a `powershell` command, the one Copilot runs there. |
+| Antigravity CLI | A `revive` group running `SessionStart` and `Stop` in `~/.gemini/config/hooks.json` (with 30 s timeout). Other groups in the file stay intact, and `~/.gemini` alone does not count without `agy`. |
 | Muse | A plugin bundle, `herdr-revive`, written into `mods/revive/muse-plugin/`, then `muse plugins install … --scope user` and `muse plugins approve herdr-revive`. Muse runs the hooks from a copy in its own cache with a reduced PATH, so the two hook scripts name the engine, node and `hc` by the full paths `install` found (falling back to PATH if node or `hc` has moved since). `install` notes which bundle it installed in `~/.local/state/herdr-revive/muse-plugin`: a bundle that changed (a new version, another engine path, another checkout's install since) replaces the plugin, and if Muse refuses the new one, the old one goes back. It loads only inside an hc terminal. `uninstall` runs `muse plugins remove herdr-revive --delete-data` and deletes the bundle. Muse loads it the next time a session starts. Not on Windows. |
 
-Droid's, Cursor's and Copilot CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot`.
+Droid's, Cursor's, Copilot CLI's and Antigravity CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot|agy`.
 Muse's plugin runs `revive.mjs hook --agent muse`.
 
 Last, it says how many Claude Code sessions already running in your Herdr terminals
@@ -259,7 +264,7 @@ How it treats your files:
 ```sh
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --pwsh --powershell   # Windows: both PowerShells
-node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot, --no-muse
+node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot, --no-agy, --no-muse
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code sessions already running
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt                  # remember them
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
@@ -495,6 +500,25 @@ flags, `--session`/`--fork` or how it ends on a signal.
   terminal's foreground shows; both names count, only as the program itself.
 - A running Muse session started before Revive was installed is not found from its files:
   `muse sessions --json` lists no process ids. It records itself at its next start.
+
+### Antigravity CLI
+
+- Checked by hand with `agy` 1.5.13 and 1.5.16 on Windows: `SessionStart` and `Stop` fire in
+  `~/.gemini/config/hooks.json` with camelCase fields (`hookEventName`, `conversationId`,
+  `workspacePaths`, `transcriptPath`), and `agy --conversation <id>` resumes the
+  conversation after a restart or reboot.
+- Antigravity CLI has no `SessionEnd` event: `/exit` fires nothing. Instead, the hook
+  starts a detached waiter (`revive.mjs watch`, at most one active waiter per `agy`
+  process under `~/.local/state/herdr-revive/watch`) that waits for the `agy` process to
+  exit and then runs the same `outlived` check as Copilot's `user_exit` (confirmed on
+  Windows: `/exit` clears `revive.session`, while closing the terminal or restarting the
+  core keeps it).
+- `Stop` also records a session if the terminal has no record yet (a conversation started
+  before installing Revive, or whose `SessionStart` timed out), and returns early right
+  after reading terminal labels once recorded.
+- `hasTranscript` returns `true` for `agy`: because `SessionStart` only fires on a
+  conversation's first message, any recorded session already has messages to resume.
+- No fork: `agy` has no fork flag.
 
 ### Windows
 

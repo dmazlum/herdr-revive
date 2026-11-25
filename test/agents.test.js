@@ -219,3 +219,75 @@ test("muse's subcommands answer and quit; resume and a first prompt don't", () =
   assert.equal(isOneShot("muse", ["muse-bin-1.4.24-R1", "resume", ID]), false);
   assert.equal(isOneShot("muse", ["muse", "fix the tests"]), false);
 });
+
+// ── Antigravity CLI (agy) ───────────────────────────────────────────────────
+
+test("agy is known by its binary and its report, never as an argument", () => {
+  assert.equal(agentKey(null, ["agy"]), "agy");
+  assert.equal(agentKey(null, ["C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.EXE", "--model", "m1"]), "agy");
+  assert.equal(agentKey(null, ["/usr/local/bin/agy", "--mode", "plan"]), "agy");
+  assert.equal(agentKey("antigravity"), "agy");
+  assert.equal(agentKey("agy"), "agy");
+  assert.equal(agentKey("antigravity-cli"), "agy");
+  assert.equal(agentKey(null, ["vim", "agy"]), null);
+});
+
+test("agy carries model, effort, mode, sandbox and agent, and drops bypasses unattended", () => {
+  assert.deepEqual(
+    carriedFlags("agy", ["agy", "--model", "gemini-4", "--effort", "high", "--mode", "auto", "--sandbox", "--agent", "reviewer", "--dangerously-skip-permissions", "--add-dir", "/x", "fix it"]),
+    ["--model", "gemini-4", "--effort", "high", "--mode", "auto", "--sandbox", "--agent", "reviewer", "--dangerously-skip-permissions"],
+  );
+  // --dangerously-skip-permissions is still carried manually, omitted unattended.
+  assert.deepEqual(
+    carriedFlags("agy", ["agy", "--dangerously-skip-permissions", "--mode", "plan", "--conversation", ID]),
+    ["--dangerously-skip-permissions", "--mode", "plan"],
+  );
+  assert.deepEqual(
+    attendedFlags("agy", ["--model", "gemini-4", "--sandbox", "--mode", "plan", "--mode", "auto", "--dangerously-skip-permissions"]),
+    { kept: ["--model", "gemini-4", "--sandbox", "--mode", "plan"], dropped: ["--mode auto", "--dangerously-skip-permissions"] },
+  );
+  assert.deepEqual(
+    attendedFlags("agy", ["--mode", "accept-edits"]),
+    { kept: [], dropped: ["--mode accept-edits"] },
+  );
+});
+
+test("agy resumes with --conversation <id> and has no fork", () => {
+  const rec = { agent: "agy", session: ID, flags: ["--model", "gemini-4", "--dangerously-skip-permissions", "--mode", "auto"] };
+  assert.deepEqual(command(rec), ["agy", "--model", "gemini-4", "--dangerously-skip-permissions", "--mode", "auto", "--conversation", ID]);
+  assert.deepEqual(command(rec, "resume", { unattended: true }), ["agy", "--model", "gemini-4", "--conversation", ID]);
+  assert.equal(command(rec, "fork"), null);
+  assert.equal(canFork("agy"), false);
+});
+
+test("agy one-shot flags (-p, --print, --prompt, acp, --input-format) are skipped", () => {
+  assert.equal(isOneShot("agy", ["agy", "-p", "hi"]), true);
+  assert.equal(isOneShot("agy", ["agy", "--print", "hi"]), true);
+  assert.equal(isOneShot("agy", ["agy", "--prompt", "hi"]), true);
+  assert.equal(isOneShot("agy", ["agy", "acp"]), true);
+  assert.equal(isOneShot("agy", ["agy", "--input-format", "stream-json"]), true);
+  assert.equal(isOneShot("agy", ["agy", "--model", "gemini-4", "fix the tests"]), false);
+});
+
+test("agy's camelCase hook payload reads conversationId and falls back to workspacePaths[0]", () => {
+  assert.deepEqual(
+    hookPayload({
+      hookEventName: "SessionStart",
+      conversationId: ID,
+      workspacePaths: ["/w"],
+      transcriptPath: "/Users/me/.gemini/antigravity-cli/brain/id/.system_generated/logs/transcript.jsonl",
+      modelName: "gemini-4",
+    }),
+    {
+      event: "SessionStart",
+      session: ID,
+      cwd: "/w",
+      reason: null,
+      transcript: "/Users/me/.gemini/antigravity-cli/brain/id/.system_generated/logs/transcript.jsonl",
+      argv: null,
+      agent: "agy",
+    },
+  );
+  assert.equal(hookPayload({ hookEventName: "Stop", conversationId: ID, cwd: "/explicit", workspacePaths: ["/fallback"] }).cwd, "/explicit");
+  assert.equal(endAction("agy", undefined), "keep");
+});

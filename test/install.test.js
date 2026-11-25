@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, symlinkSync, lstatSync, statSync, realpathSync, copyFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { withHooks, hasHooks, withShellBlock, shellBlock, withCursorHooks, hasCursorHooks, withCopilotHooks, hasCopilotHooks, engineWord } from "../mods/revive/revive.mjs";
+import { withHooks, hasHooks, withShellBlock, shellBlock, withCursorHooks, hasCursorHooks, withCopilotHooks, hasCopilotHooks, withAgyHooks, hasAgyHooks, engineWord } from "../mods/revive/revive.mjs";
 import { POSIX_HARNESS } from "./helpers/platform.js";
 
 const ENGINE = resolve("mods/revive/revive.mjs");
@@ -384,7 +384,7 @@ const fakeCli = (dir, name) => {
 // A temporary home. `factory` and `cursor` make the agents' folders; `droid`
 // and `cursorAgent` put their CLIs on a PATH that has nothing else of the
 // machine's, so a real droid or cursor-agent can't leak in.
-const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgent = cursor, copilot = false, copilotCli = copilot } = {}) => {
+const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgent = cursor, copilot = false, copilotCli = copilot, agy = false } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "revive-home-"));
   const bin = join(home, "bin");
   mkdirSync(join(home, ".claude"));
@@ -395,6 +395,7 @@ const agentsHome = ({ factory = true, cursor = true, droid = factory, cursorAgen
   if (cursorAgent) fakeCli(bin, "cursor-agent");
   if (copilot) mkdirSync(join(home, ".copilot"));
   if (copilotCli) fakeCli(bin, "copilot");
+  if (agy) fakeCli(bin, "agy");
   const env = { ...process.env, HOME: home, USERPROFILE: home, SHELL: "/bin/zsh", ZDOTDIR: home, PATH: [bin, "/usr/bin", "/bin"].join(delimiter) };
   delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME; delete env.COPILOT_HOME;
   const run = (...args) => execFileSync(process.execPath, [ENGINE, ...args], { encoding: "utf8", env });
@@ -748,4 +749,52 @@ test("--no-muse leaves Muse alone, and without Muse doctor doesn't ask for its p
   env.PATH = ["/usr/bin", "/bin"].join(delimiter);
   const doctor = JSON.parse(execFileSync(process.execPath, [ENGINE, "doctor"], { encoding: "utf8", env }));
   assert.equal(doctor.muse, null);
+});
+
+// ── Antigravity CLI (agy) ───────────────────────────────────────────────────
+
+test("agy hooks add a revive group with SessionStart and Stop beside other groups, once, and remove it cleanly", () => {
+  const before = { herdr: { PreInvocation: [{ type: "command", command: "herdr agent-hook", timeout: 10 }] } };
+  const once = withAgyHooks(before);
+  assert.deepEqual(withAgyHooks(once), once, "installing again changes nothing");
+  assert.ok(hasAgyHooks(once));
+  assert.deepEqual(once.herdr, before.herdr);
+  assert.match(once.revive.SessionStart[0].command, /revive\.mjs.* hook --agent agy$/);
+  assert.equal(once.revive.SessionStart[0].timeout, 30);
+  assert.match(once.revive.Stop[0].command, /revive\.mjs.* hook --agent agy$/);
+  assert.equal(once.revive.Stop[0].timeout, 30);
+
+  // Outdated revive group is replaced cleanly.
+  const stale = structuredClone(once);
+  stale.revive.SessionStart[0].timeout = 5;
+  assert.equal(withAgyHooks(stale).revive.SessionStart[0].timeout, 30);
+
+  assert.deepEqual(withAgyHooks(once, { remove: true }), before);
+  assert.deepEqual(withAgyHooks(withAgyHooks({}), { remove: true }), {});
+  assert.ok(!hasAgyHooks({}));
+});
+
+test("agy hooks install into ~/.gemini/config/hooks.json, respect --no-agy, and require agy CLI", () => {
+  const { home, run, json } = agentsHome({ factory: false, cursor: false, agy: true });
+  run("install", "--no-shell");
+  const hooks = json(".gemini", "config", "hooks.json");
+  assert.ok(hasAgyHooks(hooks));
+  assert.equal(JSON.parse(run("doctor")).agy, true);
+  assert.match(run("install", "--no-shell"), /Nothing to change/);
+
+  run("uninstall");
+  assert.deepEqual(json(".gemini", "config", "hooks.json"), {});
+  assert.equal(JSON.parse(run("doctor")).agy, false);
+
+  // Skip via --no-agy.
+  const skip = agentsHome({ factory: false, cursor: false, agy: true });
+  skip.run("install", "--no-shell", "--no-agy");
+  assert.ok(!existsSync(join(skip.home, ".gemini", "config", "hooks.json")));
+
+  // Absent CLI (~/.gemini alone is IDE's).
+  const noCli = agentsHome({ factory: false, cursor: false, agy: false });
+  mkdirSync(join(noCli.home, ".gemini", "config"), { recursive: true });
+  noCli.run("install", "--no-shell");
+  assert.ok(!existsSync(join(noCli.home, ".gemini", "config", "hooks.json")));
+  assert.equal(JSON.parse(noCli.run("doctor")).agy, null);
 });

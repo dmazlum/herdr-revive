@@ -400,6 +400,35 @@ export const AGENTS = {
       "--allow-url": true,
     },
   },
+  // Antigravity CLI: hooks live in ~/.gemini/config/hooks.json (groups mapped
+  // directly to events, no `hooks` wrapper). SessionStart fires at a
+  // conversation's first message (`-p` included), with camelCase fields
+  // (`hookEventName`, `conversationId`, `workspacePaths`, `transcriptPath`).
+  // There is no SessionEnd event, so the hook starts a detached waiter
+  // (`revive.mjs watch`) that settles via `outlived` when agy exits.
+  agy: {
+    name: "Antigravity CLI",
+    bin: "agy",
+    apps: ["antigravity", "agy", "antigravity-cli"],
+    argv0Only: true,
+    resume: (id, flags) => ["agy", ...flags, "--conversation", id],
+    fork: null,
+    end: () => "keep",
+    env: [],
+    oneShot: (args) => args.some((w) => w === "-p" || w === "--print" || w === "--prompt" || w === "acp" || w === "--input-format"),
+    carry: {
+      "--dangerously-skip-permissions": 0,
+      "--sandbox": 0,
+      "--model": 1,
+      "--effort": 1,
+      "--mode": 1,
+      "--agent": AGENT_NAME,
+    },
+    unattended: {
+      "--dangerously-skip-permissions": true,
+      "--mode": unless("plan"),
+    },
+  },
   // Muse, checked against muse 1.4.24 on macOS: its hooks come from a plugin
   // bundle (see revive.mjs), and get Claude Code's input. SessionStart fires
   // at a session's first answer (source "startup") and at the first message
@@ -524,14 +553,16 @@ export const endAction = (key, reason) => (AGENTS[key]?.end ?? claudeEnd)(reason
  */
 export function hookPayload(payload) {
   const p = payload && typeof payload === "object" ? payload : {};
-  const name = typeof p.hook_event_name === "string" ? p.hook_event_name : "";
-  const roots = Array.isArray(p.workspace_roots) ? p.workspace_roots : [];
+  const event = p.hook_event_name ?? p.hookEventName;
+  const name = typeof event === "string" ? event : "";
+  const roots = Array.isArray(p.workspace_roots) ? p.workspace_roots : Array.isArray(p.workspacePaths) ? p.workspacePaths : [];
+  const transcript = p.transcript_path ?? p.transcriptPath;
   return {
     event: name ? name[0].toUpperCase() + name.slice(1) : null,
-    session: p.session_id ?? p.conversation_id ?? null,
+    session: p.session_id ?? p.conversation_id ?? p.conversationId ?? null,
     cwd: p.cwd || roots[0] || null,
     reason: p.reason ?? null,
-    transcript: typeof p.transcript_path === "string" ? p.transcript_path : null,
+    transcript: typeof transcript === "string" ? transcript : null,
     argv: Array.isArray(p.argv) ? p.argv.map(String) : null,
     agent: payloadAgent(p),
   };
@@ -539,7 +570,8 @@ export function hookPayload(payload) {
 
 function payloadAgent(p) {
   // A Windows path (`C:\Users\me\.claude\projects\…`) is read like a POSIX one.
-  const path = String(p.transcript_path ?? "").replace(/\\/g, "/");
+  const path = String(p.transcript_path ?? p.transcriptPath ?? "").replace(/\\/g, "/");
+  if (path.includes("/.gemini/antigravity")) return "agy";
   if (path.includes("/.codex/")) return "codex";
   if (path.includes("/.omp/")) return "omp";
   if (path.includes("/.pi/")) return "pi";
