@@ -1647,6 +1647,8 @@ export function doctorReport() {
     ...Object.fromEntries(EXTENSION_AGENTS.map((key) => [key, existsSync(EXTENSIONS[key].dir()) ? safe(() => isExtension(key, extensionPath(key))) : null])),
     // A short wait: the panel asks for this on every refresh.
     muse: musePresent() ? safe(() => Boolean(museState(5_000)?.trusted)) : null,
+    // Grok runs Claude Code's hooks (~/.claude/settings.json): ready when those are in.
+    grok: hasCli("grok", IS_WIN ? [] : [join(homedir(), ".local", "bin")]) ? Boolean(hooks.claude) : null,
     shell: Object.fromEntries(Object.entries(RC).map(([s, rc]) => [s, safe(() => { const f = rc(); return Boolean(f) && readText(f).includes(BEGIN); })])),
   };
   // Windows: whether PowerShell runs a profile at all (see executionPolicy).
