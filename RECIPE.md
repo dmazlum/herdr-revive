@@ -202,7 +202,7 @@ A session is remembered as labels on its herdr-core terminal:
 
 | Label | Value |
 | --- | --- |
-| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid`, `cursor`, `copilot` or `muse` |
+| `revive.agent` | `claude`, `codex`, `pi`, `omp`, `droid`, `cursor`, `copilot`, `grok` or `muse` |
 | `revive.session` | The session id |
 | `revive.cwd` | The folder the session ran in |
 | `revive.flags` | The carried launch flags, as a JSON array |
@@ -238,6 +238,7 @@ One entry each in `AGENTS` (`lib/core.js`), one hook target in `HOOK_TARGETS`
 | Droid | `droid`; report `droid` | `droid … --resume <id>` | `droid … --fork <id>` | `~/.factory/hooks.json` (event map, no `hooks` wrapper) if it exists, else `hooks` in `~/.factory/settings.json`; command `… hook --agent droid` | `session_id` | `--auto`, `--use-spec`, `--disable-builtin-skills` (interactive flags only: `--skip-permissions-unsafe`, `-m` and the reasoning/tool flags are `droid exec` only, and interactive droid reads them as the prompt) |
 | Cursor | `cursor-agent`, or `agent`/`node`/`index.js` under a `cursor` or `cursor-agent` folder; report `cursor`, `cursor-agent` | `cursor-agent … --resume <id>` | none | `~/.cursor/hooks.json`: `{"version": 1, "hooks": {"sessionStart": [{"command": …}], "sessionEnd": […]}}`, no timeout; command `… hook --agent cursor` | `conversation_id`; folder from `workspace_roots[0]` | `-f`/`--force`, `--yolo`, `--model` (it has no `-m`), `--sandbox`, `--mode`, `--plan` |
 | Copilot CLI | `copilot` as the first word, or the second after `node`/`bun`/`deno` (never `gh copilot`); report `copilot` | `copilot … --resume <id>` | none (`/fork` inside only) | its own file `~/.copilot/hooks/herdr-revive.json` (`$COPILOT_HOME/hooks/`): `{"version": 1, "hooks": {"SessionStart": [{"type": "command", "bash": …, "timeoutSec": 10}], "SessionEnd": […]}}`, deleted whole on uninstall; command `… hook --agent copilot` | `session_id` | `--model`, `--mode`, `--plan`, `--autopilot`, `--reasoning-effort`, `--max-autopilot-continues`, `--agent` (a name only), `--allow-all`/`--yolo`, `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-tool`, `--deny-tool`, `--allow-url`, `--deny-url`, `--available-tools`, `--excluded-tools`, `--no-ask-user`, `--experimental`, `--no-experimental`, `--disable-builtin-mcps`, `--disable-mcp-server`, `--no-custom-instructions`, `--disallow-temp-dir`, `--screen-reader`, `--plain-diff`, `--no-mouse` |
+| Grok | `grok` as the first word only; report `grok` | `grok … --resume <id>` | `grok … --resume <id> --fork-session` | none of its own: Grok runs Claude Code's hooks from `~/.claude/settings.json` | `sessionId` (read only beside `hook_event_name`) | `-m`, `--model`, `--reasoning-effort`, `--permission-mode`, `--sandbox`, `--agent`, `--always-approve` |
 | Muse | `muse`, or the versioned binary it execs (`muse-bin-<version>`), as the first word only; report `muse` | `muse … resume <id>` | none | a plugin bundle written to `mods/revive/muse-plugin/` and installed with `muse plugins install … --scope user`, then `muse plugins approve herdr-revive`; each hook a script of its own (Muse refuses two hooks with one source); command `… hook --agent muse`; loads only when `HC_TERMINAL_ID` is set | `session_id`; terminal found from the process tree (no `HC_TERMINAL_ID` in its hooks) | `--model`, `--reasoning-effort`, `--effort`, `--approval-mode` |
 
 Everything else on the command line is left behind: a first prompt, `--resume` itself,
@@ -264,6 +265,7 @@ can write, and they come back unattended after a reboot.
   - omp: `--auto-approve`, `--plan-yolo`, `--approval-mode` (any value)
   - Droid: `--auto`
   - pi: `-a`/`--approve`
+  - Grok: `--always-approve`, `--permission-mode` other than `default`, `plan` or `dontAsk`
   - Muse: `--approval-mode` other than `untrusted` or `on-request`
 - Value flags that pick something by name take a plain name only, never a path: Codex's
   and omp's `--profile`, Claude Code's `--agent` (an agent definition, `plugin:name`
