@@ -175,3 +175,17 @@ test("claude: no transcript, or one that doesn't say its folder, is not resumabl
   assert.match(claudeStartFolder({ dirs, session: C }).why, /doesn't say which folder/, "relative");
   assert.match(claudeStartFolder({ dirs, session: "bad id", cwd: CWD }).why, /malformed/);
 });
+
+test("Grok's session is the one active_sessions.json lists for its process", () => {
+  const h = home();
+  mkdirSync(join(h, ".grok"), { recursive: true });
+  writeFileSync(join(h, ".grok", "active_sessions.json"), JSON.stringify([
+    { session_id: A, pid: 4242, cwd: "/w" },
+    { session_id: B, pid: 77, cwd: "/w" },
+  ]));
+  const dirs = agentDirs({ HOME: h });
+  assert.equal(findSession("grok", { dirs, pid: 4242 }), A);
+  assert.equal(findSession("grok", { dirs, pid: 1 }), null);
+  assert.equal(findSession("grok", { dirs: agentDirs({ HOME: home() }), pid: 4242 }), null);
+  assert.equal(agentDirs({ HOME: h, GROK_HOME: "/g" }).grok, "/g");
+});

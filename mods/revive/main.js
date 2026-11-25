@@ -498,7 +498,9 @@ export default class Revive extends View {
         ? "Revive has no record of this session, so it can't be brought back. Copilot CLI records it at its first message."
         : entry.live === "agy"
           ? "Revive has no record of this session, so it can't be brought back. Antigravity CLI records it at its first message."
-          : "Revive has no record of this session, so it can't be forked or brought back. It is recorded when it starts once Revive is installed.";
+          : entry.live === "grok"
+            ? "Revive has no record of this session, so it can't be brought back. Grok records it when it starts, through Claude Code's hooks, in a folder it trusts."
+            : "Revive has no record of this session, so it can't be forked or brought back. It is recorded when it starts once Revive is installed.";
     return v_flex().gap(12).p(16).rounded(12).bg(t.raised).border_1().border_color(t.border)
       .child(h_flex().gap(12).items_start()
         .child(this.agentTile(t, entry.live, 38))
@@ -576,7 +578,7 @@ export default class Revive extends View {
     // One entry per agent: true, false, or null when that agent isn't installed.
     const agents = Object.keys(AGENTS).filter((k) => s[k] !== null && s[k] !== undefined);
     const missing = [
-      ...agents.filter((k) => !s[k]).map((k) => (k === "pi" || k === "omp" ? `${AGENTS[k].name} extension missing` : k === "muse" ? `${AGENTS[k].name} plugin missing` : `${AGENTS[k].name} hooks missing`)),
+      ...agents.filter((k) => !s[k]).map((k) => (k === "pi" || k === "omp" ? `${AGENTS[k].name} extension missing` : k === "muse" ? `${AGENTS[k].name} plugin missing` : k === "grok" ? "Grok: Claude Code hooks missing" : `${AGENTS[k].name} hooks missing`)),
       ...(shells.length ? [] : ["shell block missing"]),
     ];
     if (!missing.length) {

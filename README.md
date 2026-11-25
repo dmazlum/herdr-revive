@@ -66,7 +66,7 @@ What "experimental" means for each one is under [Limits](#limits).
 - **Resume by hand.** An agent that died under a shell that survived it (a crash, a `kill`)
   is listed as *Interrupted*, with a **Resume** button. One whose resume failed is listed
   as *Resume failed*, with a retry.
-- **Already running.** A Claude Code session started before Revive was installed can be
+- **Already running.** A Claude Code or Grok session started before Revive was installed can be
   remembered with **Remember** in the dialog, or all at once with `revive.mjs adopt` (see
   [Limits](#limits)).
 - **Per terminal.** Turn automatic resume off for one terminal in the dialog, or for a
@@ -227,7 +227,7 @@ Each agent is set up only when it looks installed:
 Droid's, Cursor's, Copilot CLI's and Antigravity CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot|agy`.
 Muse's plugin runs `revive.mjs hook --agent muse`.
 
-Last, it says how many Claude Code sessions already running in your Herdr terminals
+Last, it says how many Claude Code and Grok sessions already running in your Herdr terminals
 aren't remembered (the ones started before Revive was installed), and points to
 `revive.mjs adopt`. It never remembers them itself: install writes only its own files.
 `doctor` gives the same count as `unremembered`.
@@ -267,7 +267,7 @@ How it treats your files:
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --pwsh --powershell   # Windows: both PowerShells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot, --no-agy, --no-muse
-node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code sessions already running
+node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code and Grok sessions already running
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt                  # remember them
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
 node ~/.config/herdr-app/mods/revive/revive.mjs doctor                 # what is installed, and how many running sessions aren't remembered
@@ -362,7 +362,8 @@ REVIVE_DEBUG=1 zsh               # say why a shell did or didn't resume
   `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process), so it can
   be forked where the agent forks.
   A running Claude Code session can be remembered with **Remember** in the dialog or with
-  `revive.mjs adopt`, once it has a message. Any other agent comes back by itself only after it has been restarted once:
+  `revive.mjs adopt`, once it has a message. So can a running Grok session, found by its
+  process in `~/.grok/active_sessions.json`. Any other agent comes back by itself only after it has been restarted once:
   Droid's and Cursor's newest file is a guess, good enough to show but not to keep.
 - An agent that died while its shell lived on is not resumed automatically, since nothing
   told the shell. Use **Resume** in the dialog.

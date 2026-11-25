@@ -3,7 +3,7 @@
 Revive brings back the coding agent a Herdr terminal lost to a reboot or a herdr-core
 restart, in the same pane, with the same session and flags. It also forks the focused
 agent's conversation into a new session beside it. Agents: Claude Code, Codex, pi,
-oh-my-pi (`omp`), Factory Droid (`droid`), the Cursor CLI (`cursor-agent`) and GitHub
+oh-my-pi (`omp`), Factory Droid (`droid`), the Cursor CLI (`cursor-agent`), Grok CLI (`grok`) and GitHub
 Copilot CLI (`copilot`); Droid, Cursor and Copilot CLI are not tested end to end with a
 real reboot yet.
 
@@ -42,7 +42,7 @@ real reboot yet.
    profile, tell the person; don't change the policy yourself.
 6. Run `node ~/.config/herdr-app/mods/revive/revive.mjs doctor` and report what it shows.
 7. New sessions are remembered from now on. Sessions already running are not: `install`
-   and `doctor` (`unremembered`) say how many Claude Code ones `adopt` could remember.
+   and `doctor` (`unremembered`) say how many Claude Code and Grok ones `adopt` could remember.
    If there are any, run `node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run`
    and show the person what it lists; `adopt` remembers them if they want. Any other
    agent comes back by itself only after it is restarted once.
@@ -292,7 +292,8 @@ A running agent nobody recorded is found from its files: Claude Code by
 `~/.factory/sessions/<cwd, every non-alphanumeric a dash>/` written since the agent started;
 Cursor by the newest `<id>/` (folder or its `store.db`) in `~/.cursor/chats/<md5 of the
 cwd>/` written since then; Copilot CLI by the `~/.copilot/session-state/<id>/` that holds
-`inuse.<its pid>.lock`. Codex, pi, omp and Muse: not found (`muse sessions --json` lists no process ids). `adopt` records a Claude Code one
+`inuse.<its pid>.lock`; Grok by the entry for its pid in `~/.grok/active_sessions.json`
+(`GROK_HOME`). Codex, pi, omp and Muse: not found (`muse sessions --json` lists no process ids). `adopt` records a Claude Code or Grok one
 from the same file (see *Rules*); the others are only shown.
 
 Checked by hand with droid 1.1.0 and cursor-agent 2026.10.22 on macOS: Droid reports
@@ -401,7 +402,8 @@ Not checked yet: a real reboot with a Muse session open.
   list; the folder it started in, from its transcript, which must pass the check above. A
   label is only asked whether a record exists: nothing in one can make adopt write
   anything, it grants nothing new, and what it writes is read back like a hook's record.
-- `adopt` records Claude Code only. Droid's and Cursor's session is the newest file in
+- `adopt` records Claude Code and Grok only (Grok's id from the `active_sessions.json`
+  entry for its process, its folder the one it runs in). Droid's and Cursor's session is the newest file in
   their folder's store, a guess good enough to show but not to keep; Codex, pi and omp
   aren't found at all.
 - `adopt` skips a terminal with a record, another machine's, a one-shot run, a session it

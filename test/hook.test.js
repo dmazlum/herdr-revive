@@ -1070,3 +1070,24 @@ while [ ! -f ${JSON.stringify(join(dir, "exit"))} ]; do sleep 0.05; done
     child.kill();
   }
 });
+
+// Grok runs Claude Code's hooks (no --agent hint); its input names the session sessionId.
+const grok = { bin: "grok", argv: ["grok", "-m", "grok-4.7", "--always-approve", "--add-dir", "/x", "fix it"] };
+const grokRec = { ...remembered, "revive.agent": "grok" };
+const grokStart = { hookEventName: "session_start", hook_event_name: "SessionStart", sessionId: ID, cwd: "/w", workspaceRoot: "/w", permissionMode: "default" };
+const grokEnd = { hookEventName: "session_end", hook_event_name: "SessionEnd", sessionId: ID, cwd: "/w" };
+
+test("Grok, through Claude Code's hook, end to end: recorded with its flags, then kept or forgotten by whether the shell outlived it", POSIX_HARNESS, () => {
+  const { run, calls, set } = setup(grok);
+  run(grokStart);
+  const got = set(calls());
+  assert.equal(got["revive.agent"], "grok");
+  assert.equal(got["revive.session"], ID);
+  assert.equal(got["revive.flags"], '["-m","grok-4.7","--always-approve"]');
+  const hangup = setup({ ...grok, labels: grokRec });
+  hangup.run(grokEnd, settle(deadPid()));
+  assert.deepEqual(hangup.calls(), []);
+  const exit = setup({ ...grok, labels: grokRec });
+  exit.run(grokEnd, settle(process.pid));
+  assert.equal(exit.set(exit.calls())["revive.session"], "");
+});
