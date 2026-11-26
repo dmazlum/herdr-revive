@@ -1,7 +1,7 @@
 // Finding a running agent's session from the files it writes, for one started
 // before Revive's hooks were installed: the dialog can then fork it (where the
-// agent forks) and show it, and, for Claude Code, `revive.mjs adopt` can
-// write the record its hook would have. The hooks stay the record; this is
+// agent forks) and show it, and, for Claude Code and Codex, `revive.mjs adopt`
+// can write the record its hook would have. The hooks stay the record; this is
 // only the fallback. Engine-only (Node's fs): the dialog never imports it.
 //
 // An agent without a finder here finds nothing, and that is fine: adding an
@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { validId } from "./core.js";
 
 /** A folder as Claude Code and Droid name its store: every non-alphanumeric a dash. */
@@ -40,6 +40,7 @@ export function agentDirs(env = process.env) {
     factory: join(home, ".factory"),
     cursor: join(home, ".cursor"),
     copilot: env.COPILOT_HOME || join(home, ".copilot"),
+    codex: env.CODEX_HOME || join(home, ".codex"),
   };
 }
 
@@ -104,15 +105,35 @@ const FINDERS = {
     if (!dir) return null;
     return newest(list(dir).map((id) => [id, Math.max(mtime(join(dir, id)), mtime(join(dir, id, "store.db")))]), startedMs);
   },
+  /**
+   * Codex writes nothing that ties a rollout to its process. A process started
+   * with its first message on the command line (`codex "…"`, as `hc run` starts
+   * agents) is matched by it: the one rollout in its folder, started since the
+   * process, whose first message is a word of `argv`. Anything else finds
+   * nothing rather than guess. Checked by hand on Windows with codex 0.171.0.
+   */
+  codex: ({ dirs, cwd, startedMs, argv }) => {
+    if (!cwd || !Number.isFinite(startedMs) || !Array.isArray(argv)) return null;
+    const words = new Set(argv.slice(1).map((w) => String(w).trim()).filter(Boolean));
+    if (!words.size) return null;
+    const found = new Set();
+    for (const file of codexRollouts(dirs.codex, startedMs)) {
+      const head = codexHead(file);
+      if (!validId(head.id) || !sameFolder(head.cwd, cwd)) continue;
+      if (!(head.at >= startedMs - 1000 && head.at <= startedMs + CODEX_START)) continue;
+      if (head.message !== null && words.has(head.message.trim())) found.add(head.id);
+    }
+    return found.size === 1 ? [...found][0] : null;
+  },
 };
 
 /**
  * The session a running agent holds, or null. `pid` is the agent's process,
- * `cwd` its folder, `startedMs` when it started.
+ * `cwd` its folder, `startedMs` when it started, `argv` its command line.
  */
-export function findSession(key, { dirs = agentDirs(), pid = null, cwd = null, startedMs = null } = {}) {
+export function findSession(key, { dirs = agentDirs(), pid = null, cwd = null, startedMs = null, argv = null } = {}) {
   const find = Object.prototype.hasOwnProperty.call(FINDERS, key) ? FINDERS[key] : null;
-  return find ? find({ dirs, pid, cwd, startedMs }) : null;
+  return find ? find({ dirs, pid, cwd, startedMs, argv }) : null;
 }
 
 // A transcript can grow to hundreds of megabytes, and the folder is in one of
@@ -120,16 +141,19 @@ export function findSession(key, { dirs = agentDirs(), pid = null, cwd = null, s
 const PIECE = 64 << 10;
 const HEAD = 1 << 20;
 
-/** The `cwd` of the first entry in a JSONL file that has one, or null. */
-function firstCwd(path) {
+/**
+ * Calls `visit` with each object entry among a JSONL file's first `limit`
+ * bytes, until it returns true. False when the file can't be read.
+ */
+function eachHeadEntry(path, visit, limit = HEAD) {
   let fd = null;
   try {
     fd = openSync(path, "r");
-    const buf = Buffer.alloc(HEAD);
+    const buf = Buffer.alloc(limit);
     let size = 0;
     let from = 0;
-    while (size < HEAD) {
-      const n = readSync(fd, buf, size, Math.min(PIECE, HEAD - size), size);
+    while (size < limit) {
+      const n = readSync(fd, buf, size, Math.min(PIECE, limit - size), size);
       if (!n) break;
       size += n;
       // Only whole lines: one cut at the end of a piece waits for the next.
@@ -138,13 +162,79 @@ function firstCwd(path) {
         from = nl + 1;
         let entry;
         try { entry = JSON.parse(line); } catch { continue; }
-        if (entry && typeof entry === "object" && "cwd" in entry) return typeof entry.cwd === "string" ? entry.cwd : null;
+        if (entry && typeof entry === "object" && visit(entry)) return true;
       }
     }
-    return null;
-  } catch { return null; }
+    return true;
+  } catch { return false; }
   finally { if (fd !== null) closeSync(fd); }
 }
+
+/** The `cwd` of the first entry in a JSONL file that has one, or null. */
+function firstCwd(path) {
+  let cwd = null;
+  eachHeadEntry(path, (entry) => {
+    if (!("cwd" in entry)) return false;
+    if (typeof entry.cwd === "string") cwd = entry.cwd;
+    return true;
+  });
+  return cwd;
+}
+
+// A Codex rollout opens with its instructions and tools, tens or hundreds of
+// kilobytes, before the first message.
+const CODEX_HEAD = 8 << 20;
+// The first message reaches the rollout once Codex has started its tools and
+// MCP servers, which can take a while.
+const CODEX_START = 2 * 60_000;
+const DAY = 24 * 60 * 60_000;
+
+/**
+ * The rollout files Codex may have started for a process that started at
+ * `startedMs`: under `sessions/YYYY/MM/DD/` (its local date), written since.
+ */
+function codexRollouts(root, startedMs) {
+  const files = new Set();
+  for (const ms of [startedMs - DAY, startedMs, startedMs + DAY]) {
+    const d = new Date(ms);
+    const dir = join(root, "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+    for (const f of list(dir)) {
+      if (f.startsWith("rollout-") && f.endsWith(".jsonl") && mtime(join(dir, f)) >= startedMs - 1000) files.add(join(dir, f));
+    }
+  }
+  return [...files];
+}
+
+/** A user message's text in a rollout entry, or null: Codex 0.171's `item_completed`, or the older `user_message` event. */
+function codexUserText(entry) {
+  if (entry.type !== "event_msg") return null;
+  const p = entry.payload;
+  if (p?.type === "user_message" && typeof p.message === "string") return p.message;
+  if (p?.type !== "item_completed" || p.item?.type !== "UserMessage" || !Array.isArray(p.item.content)) return null;
+  return p.item.content.filter((c) => typeof c?.text === "string").map((c) => c.text).join("");
+}
+
+/** A rollout's session, folder and start, and its first message: `{ id, cwd, at, message }`. */
+function codexHead(path) {
+  const head = { id: null, cwd: null, at: null, message: null };
+  eachHeadEntry(path, (entry) => {
+    if (entry.type === "session_meta" && head.id === null) {
+      const p = entry.payload ?? {};
+      head.id = p.id ?? p.session_id ?? null;
+      head.cwd = typeof p.cwd === "string" ? p.cwd : null;
+      head.at = Date.parse(p.timestamp ?? entry.timestamp ?? "");
+      return false;
+    }
+    head.message = codexUserText(entry);
+    return head.message !== null;
+  }, CODEX_HEAD);
+  return head;
+}
+
+const sameFolder = (a, b) => {
+  if (!a || !b) return false;
+  return process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+};
 
 /**
  * The folder a running Claude Code session started in, `{ cwd }`, or `{ why }`

@@ -60,8 +60,7 @@ else if (cmd === "label") {
   };
   let pid = 50_000;
   /** A live terminal whose foreground runs `argv` in `cwd`, with Claude Code's sessions/<pid>.json saying `session`. */
-  const terminal = ({ address = `t${terminals.length + 1}`, argv, cwd, session = null, labels = {}, where = null }) => {
-    const fg = ++pid;
+  const terminal = ({ address = `t${terminals.length + 1}`, argv, cwd, session = null, labels = {}, where = null, fg = ++pid }) => {
     if (session) writeFileSync(join(home, ".claude", "sessions", `${fg}.json`), JSON.stringify({ pid: fg, sessionId: session, cwd }));
     terminals.push({ address, state: "live", pid: SHELL, cwd, labels: { ...(where ? { where } : {}), ...labels }, foreground: { pid: fg, argv, cwd } });
     writeFileSync(state, JSON.stringify(terminals));
@@ -130,7 +129,7 @@ test("adopt skips recorded terminals, one-shot runs, unknown sessions and other 
     "  t2  Claude Code: a one-shot run, with no session to bring back",
     "  t3  Claude Code: Revive can't find its session from its files",
     "  t4  Claude Code: Revive can't find its session from its files",
-    "  t5  Codex: only a running Claude Code session can be remembered; start it again to record it",
+    "  t5  Codex: Revive finds a Codex session only when its first message was given on the command line; start it again to record it",
     "",
   ].join("\n"), "a recorded terminal, a shell and another machine's terminal say nothing");
 });
@@ -199,6 +198,32 @@ test("one session is adopted into one terminal only", POSIX_HARNESS, () => {
   assert.match(r.stdout, /t4 {2}Claude Code: another terminal holds the same session/);
 });
 
+test("adopt remembers a Codex session by the first message on its command line", POSIX_HARNESS, () => {
+  const w = world();
+  const work = w.folder("work");
+  // Its process is a real one (this test's), so `ps` gives the start the rollout is matched against.
+  const started = Date.parse(since);
+  const d = new Date(started);
+  const dir = join(w.home, ".codex", "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `rollout-x-${D}.jsonl`), [
+    { type: "session_meta", payload: { id: D, cwd: work, timestamp: new Date(started + 1000).toISOString() } },
+    { type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: "review x.rs" }] } } },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const t = w.terminal({ argv: ["codex", "--no-daemon", "-c", "features.hooks=false", "review x.rs"], cwd: work, fg: SHELL });
+  const list = JSON.parse(execFileSync("node", [ENGINE, "list"], { encoding: "utf8", env: w.env() })).entries[0];
+  assert.equal(list.rec.session, D);
+  assert.equal(list.rememberable, true);
+  const r = w.run(["adopt"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Remembered 1 running session:\n {2}t1 {2}Codex 3fbe1111 {2}\S+work\n$/);
+  const labels = w.labelsOf(t);
+  assert.equal(labels["revive.agent"], "codex");
+  assert.equal(labels["revive.session"], D);
+  assert.equal(labels["revive.flags"], '["--no-daemon"]');
+  assert.match(resumeLine(readRecord(labels), { unattended: true }), new RegExp(`^cd -- ${re(work)} && REVIVE_RESUME=\S+ codex resume --no-daemon ${D}$`));
+});
+
 test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HARNESS, () => {
   const w = world();
   const work = w.folder("work");
@@ -213,7 +238,7 @@ test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HA
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(w.calls(), []);
   assert.equal(w.labelsOf(t)["revive.session"], undefined);
-  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code session can be remembered/);
+  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code or Codex session can be remembered/);
 });
 
 test("a session found under this process's CLAUDE_CONFIG_DIR records that it needs it, by name", POSIX_HARNESS, () => {
@@ -315,7 +340,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   w.terminal({ argv: ["claude"], cwd: work, session: B });
   w.terminal({ argv: ["claude"], cwd: work, session: C, labels: { "revive.agent": "claude", "revive.session": C } });
   w.terminal({ argv: ["codex"], cwd: work });
-  const note = "2 running Claude Code sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
+  const note = "2 running sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
   const r = w.run(["install", "--no-shell"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^Updated:\n {2}\S+settings\.json\n/, "the hooks first");
@@ -324,7 +349,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   // Again: nothing to change, and the same count.
   assert.equal(w.run(["install", "--no-shell"]).stdout, `Nothing to change.\n${note}`);
   w.run(["adopt", "t1"]);
-  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running Claude Code session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
+  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
   w.run(["adopt"]);
   assert.equal(w.run(["install", "--no-shell"]).stdout, "Nothing to change.\n", "nothing left to say");
   assert.doesNotMatch(w.run(["uninstall", "--no-shell"]).stdout, /remember/);

@@ -98,8 +98,62 @@ test("cursor: the newest chat folder for the workspace written since the agent s
   assert.equal(findSession("cursor", { dirs, cwd: "/nowhere", startedMs: T0 }), null);
 });
 
+// A Codex rollout under sessions/YYYY/MM/DD/ (its local date), as codex 0.171 writes it:
+// session_meta, then instructions, then the first message as an item_completed event.
+const rollout = (dirs, { id, cwd = CWD, start = T0 + 3_000, message = "fix the bug", old = false, written = start + 1_000 }) => {
+  const d = new Date(start);
+  const dir = join(dirs.codex, "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+  mkdirSync(dir, { recursive: true });
+  const first = old
+    ? { type: "event_msg", payload: { type: "user_message", message } }
+    : { type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: message }] } } };
+  const lines = [
+    { type: "session_meta", payload: { id, cwd, timestamp: new Date(start).toISOString() } },
+    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions" }] } },
+    ...(message === null ? [] : [first]),
+  ];
+  const file = join(dir, `rollout-x-${id}.jsonl`);
+  writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  at(file, written);
+};
+const codexArgv = (prompt) => ["node", "/npm/codex/bin/codex.js", "--no-daemon", "-c", "features.hooks=false", ...(prompt ? [prompt] : [])];
+
+test("codex: the one rollout in the folder, started since the process, whose first message is on its command line", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "$review the branch" });
+  rollout(dirs, { id: B, message: "something else" });
+  rollout(dirs, { id: C, cwd: "/elsewhere", message: "$review the branch" });
+  const find = (extra = {}) => findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("$review the branch"), ...extra });
+  assert.equal(find(), A);
+  assert.equal(find({ argv: codexArgv(null) }), null, "no message on the command line: nothing to match");
+  assert.equal(find({ argv: null }), null);
+  assert.equal(find({ startedMs: null }), null, "no start time: no window to look in");
+  assert.equal(find({ cwd: "/nowhere" }), null);
+  assert.equal(find({ startedMs: T0 + 10_000 }), null, "started before the process");
+  assert.equal(find({ startedMs: T0 - 5 * 60_000 }), null, "started long after the process");
+});
+
+test("codex: two rollouts with the same first message find nothing", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "go" });
+  rollout(dirs, { id: B, start: T0 + 6_000, message: "go" });
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), null);
+});
+
+test("codex: a rollout with no message yet, or an old one only touched since, finds nothing", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: null });
+  rollout(dirs, { id: B, start: T0 - 60 * 60_000, written: T0 + 5_000, message: "go" });
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), null);
+});
+
+test("codex: the older user_message event and CODEX_HOME", () => {
+  const dirs = agentDirs({ HOME: home(), CODEX_HOME: join(home(), "codex-home") });
+  rollout(dirs, { id: A, message: "go", old: true });
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), A);
+});
+
 test("an agent without a finder finds nothing", () => {
-  assert.equal(findSession("codex", { dirs: agentDirs({ HOME: home() }), pid: 1, cwd: CWD, startedMs: T0 }), null);
   assert.equal(findSession("vim", { dirs: agentDirs({ HOME: home() }) }), null);
 });
 
