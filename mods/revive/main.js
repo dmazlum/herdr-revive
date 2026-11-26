@@ -7,7 +7,7 @@
 // work while this dialog, and the app, are closed.
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, run, theme, focused, appHome, home, props, closeOverlay, notify, shared, setShared } from "herdr";
 import * as herdr from "herdr";
 import { AGENTS, canFork, canRestore, command, shortId, ago, unresumable, needsCommand, cameBack } from "./lib/core.js";
@@ -68,7 +68,10 @@ function listMaxH(extra) {
   let height = null;
   try { height = window.viewport_size()?.height; } catch { /* no window yet */ }
   if (!Number.isFinite(height) || height <= 0) return null;
-  return Math.max(160, Math.floor(height * MAX_SHARE) - CHROME_H - extra);
+  // viewport_size is in window px; layout lengths are scaled by the app's zoom.
+  let zoom = 1;
+  try { zoom = Number(herdr.settings()?.zoom) || 1; } catch { /* older app */ }
+  return Math.max(160, Math.floor((height / zoom) * MAX_SHARE) - CHROME_H - extra);
 }
 
 /** A folder the way a shell prompt shows it: the home folder as `~`. */
@@ -613,7 +616,9 @@ export default class Revive extends View {
       .when(back.list.length > 0, (el) => el.child(this.cameBackStrip(t, back)))
       .when(Boolean(latest), (el) => el.child(this.updateStrip(t, latest)))
       .child(div().flex_none().h(1).bg(t.border))
-      .child(div().id("revive-scroll").when(listH !== null, (el) => el.max_h(listH)).overflow_y_scrollbar()
+      // overflow_y_scrollbar() wraps the area, so its max_h never bounded the part that scrolls:
+      // the area itself scrolls, with a Scrollbar laid over it that drives it by id.
+      .child(div().relative().min_h(0).flex_shrink(1).child(v_flex().id("revive-scroll").when(listH !== null, (el) => el.max_h(listH)).min_h(0).overflow_y_scroll()
         .when(nothing, (el) => el.child(this.emptyState(t)))
         .when(!nothing, (el) => el.child(v_flex().px(20).pt(2).pb(14)
           .child(section(t, "FOCUSED TERMINAL"))
@@ -622,6 +627,7 @@ export default class Revive extends View {
             .child(v_flex().gap(4).children(needs.map((e, i) => this.row(t, e, `n${i}`, continueCol)))))
           .when(rest.length > 0, (b) => b.child(section(t, "OTHER SESSIONS"))
             .child(v_flex().gap(2).children(rest.map((e, i) => this.row(t, e, `r${i}`, continueCol))))))))
+        .child(Scrollbar.vertical("revive-scroll").absolute().inset_0()))
       .when(Boolean(this.note), (el) => el.child(div().flex_none().mx(20).mb(12).px(10).py(8).rounded(8).text_size(11.5)
         .bg(alpha(this.note.level === "error" ? t.ansi1 : t.foreground, "14"))
         .text_color(this.note.level === "error" ? t.ansi1 : t.muted).child(this.note.text)))
