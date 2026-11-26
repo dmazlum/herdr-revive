@@ -130,7 +130,7 @@ test("adopt skips recorded terminals, one-shot runs, unknown sessions and other 
     "  t2  Claude Code: a one-shot run, with no session to bring back",
     "  t3  Claude Code: Revive can't find its session from its files",
     "  t4  Claude Code: Revive can't find its session from its files",
-    "  t5  Codex: only a running Claude Code session can be remembered; start it again to record it",
+    "  t5  Codex: only a running Claude Code or Grok session can be remembered; start it again to record it",
     "",
   ].join("\n"), "a recorded terminal, a shell and another machine's terminal say nothing");
 });
@@ -213,7 +213,7 @@ test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HA
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(w.calls(), []);
   assert.equal(w.labelsOf(t)["revive.session"], undefined);
-  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code session can be remembered/);
+  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code or Grok session can be remembered/);
 });
 
 test("a session found under this process's CLAUDE_CONFIG_DIR records that it needs it, by name", POSIX_HARNESS, () => {
@@ -315,7 +315,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   w.terminal({ argv: ["claude"], cwd: work, session: B });
   w.terminal({ argv: ["claude"], cwd: work, session: C, labels: { "revive.agent": "claude", "revive.session": C } });
   w.terminal({ argv: ["codex"], cwd: work });
-  const note = "2 running Claude Code sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
+  const note = "2 running Claude Code or Grok sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
   const r = w.run(["install", "--no-shell"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^Updated:\n {2}\S+settings\.json\n/, "the hooks first");
@@ -324,7 +324,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   // Again: nothing to change, and the same count.
   assert.equal(w.run(["install", "--no-shell"]).stdout, `Nothing to change.\n${note}`);
   w.run(["adopt", "t1"]);
-  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running Claude Code session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
+  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running Claude Code or Grok session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
   w.run(["adopt"]);
   assert.equal(w.run(["install", "--no-shell"]).stdout, "Nothing to change.\n", "nothing left to say");
   assert.doesNotMatch(w.run(["uninstall", "--no-shell"]).stdout, /remember/);
@@ -362,4 +362,20 @@ test("install doesn't ask hc while the terminal's core is down, and installs wit
   assert.equal(none.status, 0);
   assert.match(none.stdout, /Nothing to change/);
   assert.equal(none.stderr, `Couldn't count the running sessions Revive doesn't remember: ${join(w.root, "no-such-hc")} isn't on PATH. revive.mjs adopt --dry-run lists them.\n`);
+});
+
+test("adopt remembers a running Grok session from active_sessions.json, with its flags", POSIX_HARNESS, () => {
+  const w = world();
+  const cwd = w.folder("grokwork");
+  const t = w.terminal({ argv: ["grok", "-m", "grok-4.7", "--add-dir", "/x"], cwd });
+  const fg = JSON.parse(readFileSync(join(w.root, "terminals.json"), "utf8")).find((x) => x.address === t).foreground.pid;
+  mkdirSync(join(w.home, ".grok"), { recursive: true });
+  writeFileSync(join(w.home, ".grok", "active_sessions.json"), JSON.stringify([{ session_id: A, pid: fg, cwd }]));
+  const r = w.run(["adopt"]);
+  assert.equal(r.status, 0, r.stderr);
+  const rec = readRecord(w.labelsOf(t));
+  assert.equal(rec.agent, "grok");
+  assert.equal(rec.session, A);
+  assert.equal(rec.cwd, cwd);
+  assert.deepEqual(rec.flags, ["-m", "grok-4.7"]);
 });

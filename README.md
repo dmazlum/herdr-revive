@@ -16,7 +16,7 @@ conversation, the same model and flags. There's nothing to type and nothing runn
 background. While an agent is live, one key forks its conversation into a new pane beside
 it.
 
-Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **Antigravity CLI**, **Muse**, **pi** and **omp**.
+Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, **Antigravity CLI**, **Grok**, **Muse**, **pi** and **omp**.
 
 ![Revive](preview.png)
 
@@ -43,6 +43,7 @@ Works with **Claude Code**, **Codex**, **Copilot CLI**, **Cursor**, **Droid**, *
 | [Cursor CLI](https://cursor.com/docs/cli/overview) (`cursor-agent`) | experimental | `cursor-agent --resume <id>` | no fork | hooks |
 | [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) | experimental (tested with copilot 1.0.109 and 1.0.111) | `copilot --resume <id>` | no fork (use `/fork` inside) | hooks |
 | Antigravity CLI (`agy`) | experimental (tested with agy 1.5.13 on Windows) | `agy --conversation <id>` | no fork | hooks |
+| Grok CLI (`grok`) | experimental (tested with grok 1.0.92 on macOS) | `grok --resume <id>` | `grok --resume <id> --fork-session` | Claude Code's hooks |
 | Muse (`muse`) | experimental (tested with muse 1.4.24 on macOS; not on Windows) | `muse resume <id>` | no fork | plugin |
 
 What "experimental" means for each one is under [Limits](#limits).
@@ -65,7 +66,7 @@ What "experimental" means for each one is under [Limits](#limits).
 - **Resume by hand.** An agent that died under a shell that survived it (a crash, a `kill`)
   is listed as *Interrupted*, with a **Resume** button. One whose resume failed is listed
   as *Resume failed*, with a retry.
-- **Already running.** A Claude Code session started before Revive was installed can be
+- **Already running.** A Claude Code or Grok session started before Revive was installed can be
   remembered with **Remember** in the dialog, or all at once with `revive.mjs adopt` (see
   [Limits](#limits)).
 - **Per terminal.** Turn automatic resume off for one terminal in the dialog, or for a
@@ -99,6 +100,7 @@ only in a resume you start from the dialog:
 | Antigravity CLI | `--dangerously-skip-permissions`, `--mode` other than `plan` |
 | omp | `--auto-approve`, `--plan-yolo`, `--approval-mode` |
 | Droid | `--auto` |
+| Grok | `--always-approve`, `--permission-mode` other than `default`, `plan` or `dontAsk` |
 | Muse | `--approval-mode` other than `untrusted` or `on-request` |
 | pi | `-a`/`--approve` |
 
@@ -225,7 +227,7 @@ Each agent is set up only when it looks installed:
 Droid's, Cursor's, Copilot CLI's and Antigravity CLI's hooks run `revive.mjs hook --agent droid|cursor|copilot|agy`.
 Muse's plugin runs `revive.mjs hook --agent muse`.
 
-Last, it says how many Claude Code sessions already running in your Herdr terminals
+Last, it says how many Claude Code and Grok sessions already running in your Herdr terminals
 aren't remembered (the ones started before Revive was installed), and points to
 `revive.mjs adopt`. It never remembers them itself: install writes only its own files.
 `doctor` gives the same count as `unremembered`.
@@ -265,7 +267,7 @@ How it treats your files:
 node ~/.config/herdr-app/mods/revive/revive.mjs install --zsh --bash   # both shells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --pwsh --powershell   # Windows: both PowerShells
 node ~/.config/herdr-app/mods/revive/revive.mjs install --no-pi        # skip an agent: --no-codex, --no-pi, --no-omp, --no-droid, --no-cursor, --no-copilot, --no-agy, --no-muse
-node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code sessions already running
+node ~/.config/herdr-app/mods/revive/revive.mjs adopt --dry-run        # what adopt would remember of the Claude Code and Grok sessions already running
 node ~/.config/herdr-app/mods/revive/revive.mjs adopt                  # remember them
 node ~/.config/herdr-app/mods/revive/revive.mjs uninstall              # take it all out
 node ~/.config/herdr-app/mods/revive/revive.mjs doctor                 # what is installed, and how many running sessions aren't remembered
@@ -360,7 +362,8 @@ REVIVE_DEBUG=1 zsh               # say why a shell did or didn't resume
   `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process), so it can
   be forked where the agent forks.
   A running Claude Code session can be remembered with **Remember** in the dialog or with
-  `revive.mjs adopt`, once it has a message. Any other agent comes back by itself only after it has been restarted once:
+  `revive.mjs adopt`, once it has a message. So can a running Grok session, found by its
+  process in `~/.grok/active_sessions.json`. Any other agent comes back by itself only after it has been restarted once:
   Droid's and Cursor's newest file is a guess, good enough to show but not to keep.
 - An agent that died while its shell lived on is not resumed automatically, since nothing
   told the shell. Use **Resume** in the dialog.
@@ -473,6 +476,23 @@ flags, `--session`/`--fork` or how it ends on a signal.
 - No fork from the dialog: Copilot CLI has no fork flag. Use `/fork` inside the session.
 - `gh copilot` (gh's own command) is not recognized; the `copilot` CLI is, also as
   `node …/copilot` from npm.
+
+### Grok
+
+- Grok runs the hooks in `~/.claude/settings.json` (its Claude Code compatibility, on by
+  default), so the hooks `install` writes for Claude Code record Grok sessions too. Its hook
+  input names the session `sessionId`, beside Claude Code's `hook_event_name`. Without
+  `~/.claude`, or with `[compat.claude] hooks = false` in `~/.grok/config.toml`, Grok sessions
+  aren't recorded.
+- Grok runs those hooks only in a folder it trusts: a session in a folder you haven't trusted
+  isn't recorded.
+- Its `SessionEnd` reasons aren't documented, so a session end is settled the way Muse's is:
+  kept when the terminal goes too (a reboot, a core restart), forgotten when the shell outlives
+  Grok (`/exit`, or Grok alone killed).
+- Checked by hand with grok 1.0.92 on macOS: recorded at start, kept after a hangup of Grok and
+  its shell, and resumed into the same conversation. Not yet checked: a real reboot.
+- A running Grok session started before Revive was installed is not found from its files. It
+  records itself at its next start.
 
 ### Muse
 

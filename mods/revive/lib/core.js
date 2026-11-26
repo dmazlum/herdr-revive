@@ -429,6 +429,36 @@ export const AGENTS = {
       "--mode": unless("plan"),
     },
   },
+  // Grok CLI, checked against grok 1.0.92 on macOS. It runs the
+  // hooks in ~/.claude/settings.json (Claude Code compatibility, after folder
+  // trust), so the hook Revive installs for Claude Code records it too; its
+  // input names the session `sessionId`. `--resume <id>` reuses the session id,
+  // `--fork-session` copies it. Its SessionEnd reasons aren't documented, so
+  // they are settled by whether the terminal outlived Grok, as for Muse.
+  grok: {
+    name: "Grok",
+    bin: "grok",
+    apps: ["grok"],
+    argv0Only: true,
+    resume: (id, flags) => ["grok", ...flags, "--resume", id],
+    fork: (id, flags) => ["grok", ...flags, "--resume", id, "--fork-session"],
+    end: () => "settle",
+    env: ["GROK_HOME"],
+    oneShot: (args) => args.some((w) => w === "-p" || w === "--single" || w === "--prompt-file" || w === "--prompt-json" || w === "--output-format"),
+    carry: {
+      "--always-approve": 0,
+      "-m": 1,
+      "--model": 1,
+      "--reasoning-effort": 1,
+      "--permission-mode": 1,
+      "--sandbox": NAME,
+      "--agent": AGENT_NAME,
+    },
+    unattended: {
+      "--always-approve": true,
+      "--permission-mode": unless("default", "plan", "dontAsk"),
+    },
+  },
   // Muse, checked against muse 1.4.24 on macOS: its hooks come from a plugin
   // bundle (see revive.mjs), and get Claude Code's input. SessionStart fires
   // at a session's first answer (source "startup") and at the first message
@@ -559,7 +589,8 @@ export function hookPayload(payload) {
   const transcript = p.transcript_path ?? p.transcriptPath;
   return {
     event: name ? name[0].toUpperCase() + name.slice(1) : null,
-    session: p.session_id ?? p.conversation_id ?? p.conversationId ?? null,
+    // Grok sends `sessionId` beside Claude Code's `hook_event_name`; Copilot's camelCase hooks have no such key and stay unread.
+    session: p.session_id ?? (p.hook_event_name ? p.sessionId : undefined) ?? p.conversation_id ?? p.conversationId ?? null,
     cwd: p.cwd || roots[0] || null,
     reason: p.reason ?? null,
     transcript: typeof transcript === "string" ? transcript : null,

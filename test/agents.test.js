@@ -291,3 +291,53 @@ test("agy's camelCase hook payload reads conversationId and falls back to worksp
   assert.equal(hookPayload({ hookEventName: "Stop", conversationId: ID, cwd: "/explicit", workspacePaths: ["/fallback"] }).cwd, "/explicit");
   assert.equal(endAction("agy", undefined), "keep");
 });
+
+test("grok is known by its name as the first word or its report, never as an argument", () => {
+  assert.equal(agentKey(null, ["grok"]), "grok");
+  assert.equal(agentKey(null, ["/Users/me/.local/bin/grok", "-m", "grok-4.7"]), "grok");
+  assert.equal(agentKey("grok"), "grok");
+  assert.equal(agentKey(null, ["vim", "grok"]), null);
+  assert.equal(agentKey(null, ["grokker"]), null);
+});
+
+test("grok carries its model, effort, permission mode, sandbox and agent, and never a session id, folder or prompt file", () => {
+  assert.deepEqual(carriedFlags("grok", ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--sandbox", "strict", "--agent", "reviewer", "-s", ID, "--add-dir", "/x", "--system-prompt-file", "/p", "fix it"]),
+    ["-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--sandbox", "strict", "--agent", "reviewer"]);
+  assert.deepEqual(carriedFlags("grok", ["grok", "--sandbox", "../x"]), []);
+});
+
+test("grok's approval bypasses never come back unattended", () => {
+  assert.deepEqual(attendedFlags("grok", ["--always-approve", "--permission-mode", "bypassPermissions", "-m", "m1"]),
+    { kept: ["-m", "m1"], dropped: ["--always-approve", "--permission-mode bypassPermissions"] });
+  assert.deepEqual(attendedFlags("grok", ["--permission-mode", "auto"]).dropped, ["--permission-mode auto"]);
+  assert.deepEqual(attendedFlags("grok", ["--permission-mode", "plan"]), { kept: ["--permission-mode", "plan"], dropped: [] });
+});
+
+test("grok resumes with `grok --resume <id>` and forks with --fork-session", () => {
+  const rec = { agent: "grok", session: ID, flags: ["-m", "m1", "--always-approve"] };
+  assert.deepEqual(command(rec), ["grok", "-m", "m1", "--always-approve", "--resume", ID]);
+  assert.deepEqual(command(rec, "resume", { unattended: true }), ["grok", "-m", "m1", "--resume", ID]);
+  assert.deepEqual(command(rec, "fork"), ["grok", "-m", "m1", "--always-approve", "--resume", ID, "--fork-session"]);
+  assert.equal(canFork("grok"), true);
+});
+
+test("grok's SessionEnd is settled by whether the terminal outlived it", () => {
+  assert.equal(endAction("grok", "other"), "settle");
+  assert.equal(endAction("grok", undefined), "settle");
+});
+
+test("grok's single-turn runs answer and quit; a first prompt doesn't", () => {
+  assert.equal(isOneShot("grok", ["grok", "-p", "fix it"]), true);
+  assert.equal(isOneShot("grok", ["grok", "--single", "fix it"]), true);
+  assert.equal(isOneShot("grok", ["grok", "--prompt-file", "/p"]), true);
+  assert.equal(isOneShot("grok", ["grok", "--output-format", "json", "x"]), true);
+  assert.equal(isOneShot("grok", ["grok", "fix the tests"]), false);
+});
+
+test("grok's hook input names the session sessionId beside Claude Code's event key; Copilot's camelCase input still doesn't count", () => {
+  const p = hookPayload({ hookEventName: "session_start", hook_event_name: "SessionStart", sessionId: ID, cwd: "/w", workspaceRoot: "/w" });
+  assert.equal(p.event, "SessionStart");
+  assert.equal(p.session, ID);
+  assert.equal(p.cwd, "/w");
+  assert.equal(hookPayload({ hookEventName: "sessionStart", sessionId: ID }).session, null);
+});

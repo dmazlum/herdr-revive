@@ -40,6 +40,7 @@ export function agentDirs(env = process.env) {
     factory: join(home, ".factory"),
     cursor: join(home, ".cursor"),
     copilot: env.COPILOT_HOME || join(home, ".copilot"),
+    grok: env.GROK_HOME || join(home, ".grok"),
   };
 }
 
@@ -97,6 +98,18 @@ const FINDERS = {
     if (!Number.isInteger(pid) || pid <= 0) return null;
     const root = join(dirs.copilot, "session-state");
     return list(root).find((id) => validId(id) && existsSync(join(root, id, `inuse.${pid}.lock`))) ?? null;
+  },
+  /**
+   * Grok lists its open sessions in `active_sessions.json`, each with the
+   * process that holds it (checked with grok 1.0.92 on macOS).
+   */
+  grok: ({ dirs, pid }) => {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try {
+      const open = JSON.parse(readFileSync(join(dirs.grok, "active_sessions.json"), "utf8"));
+      const id = Array.isArray(open) ? open.find((s) => s?.pid === pid)?.session_id : null;
+      return validId(id) ? id : null;
+    } catch { return null; }
   },
   // A chat's folder is made once; its store.db is written as the chat goes on.
   cursor: ({ dirs, cwd, startedMs }) => {

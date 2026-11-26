@@ -655,10 +655,10 @@ function describe(t, since, focus, fgSince = null, procs = null) {
       entry.rec = { agent: live, session: found.session, cwd: found.cwd, flags: carriedFlags(live, t.foreground.argv), shell: t.pid, auto: true };
       entry.state = "running";
       entry.unrecorded = true;
-      // Only Claude Code's can be remembered (`adopt`): false, with why, while
-      // its start folder can't be told; absent for the others.
-      if (live === "claude") entry.rememberable = !found.why;
-      if (live === "claude" && found.why) entry.rememberWhy = found.why;
+      // Only Claude Code's and Grok's can be remembered (`adopt`): false, with
+      // why, while Claude Code's start folder can't be told; absent for the others.
+      if (ADOPTABLE.includes(live)) entry.rememberable = !found.why;
+      if (ADOPTABLE.includes(live) && found.why) entry.rememberWhy = found.why;
     }
   }
   // An agent running with nothing on record: the dialog still names it, and its folder.
@@ -754,6 +754,10 @@ async function restore(args) {
  * adopt record anything, and what it writes is read back through the same
  * filters as a hook's (readRecord, vetRecord).
  */
+// Agents whose running session is named for sure by a file keyed by its process:
+// Claude Code's sessions/<pid>.json, Grok's active_sessions.json.
+const ADOPTABLE = ["claude", "grok"];
+
 function adoption(t, procs) {
   if (readRecord(t.labels)) return null;
   const agent = liveAgent(t);
@@ -761,10 +765,10 @@ function adoption(t, procs) {
   const argv = t.foreground?.argv ?? [];
   // `claude -p` typed in the terminal: it answers and quits, as for the hook.
   if (isOneShot(agent, argv)) return { agent, why: "a one-shot run, with no session to bring back" };
-  // Only Claude Code's sessions/<pid>.json names its session for sure. The
-  // others are found by the newest file in their folder's store, good enough
-  // to show but not to keep as a record.
-  if (agent !== "claude") return { agent, why: "only a running Claude Code session can be remembered; start it again to record it" };
+  // Only Claude Code's sessions/<pid>.json and Grok's active_sessions.json name
+  // a session for sure. The others are found by the newest file in their
+  // folder's store, good enough to show but not to keep as a record.
+  if (!ADOPTABLE.includes(agent)) return { agent, why: "only a running Claude Code or Grok session can be remembered; start it again to record it" };
   const found = runningSession(t, agent, procs.get(t.foreground?.pid)?.since);
   if (!found || !validId(found.session)) return { agent, why: "Revive can't find its session from its files" };
   const { session, cwd } = found;
@@ -1595,7 +1599,7 @@ async function unremembered() {
   return (await adoptRunning({ dry: true })).filter((r) => r.fields).length;
 }
 
-const unrememberedNote = (n) => `${n} running Claude Code session${n === 1 ? " isn't" : "s aren't"} remembered yet: revive.mjs adopt --dry-run lists ${n === 1 ? "it" : "them"}, and revive.mjs adopt remembers ${n === 1 ? "it" : "them"}.`;
+const unrememberedNote = (n) => `${n} running Claude Code or Grok session${n === 1 ? " isn't" : "s aren't"} remembered yet: revive.mjs adopt --dry-run lists ${n === 1 ? "it" : "them"}, and revive.mjs adopt remembers ${n === 1 ? "it" : "them"}.`;
 
 /** Why an `hc` call failed, in one line. */
 const hcFailure = (err) => (err?.code === "ENOENT" ? `${hcBin()} isn't on PATH` : String(err?.stderr || err?.message || err).trim().split("\n")[0]);
@@ -1647,6 +1651,8 @@ export function doctorReport() {
     ...Object.fromEntries(EXTENSION_AGENTS.map((key) => [key, existsSync(EXTENSIONS[key].dir()) ? safe(() => isExtension(key, extensionPath(key))) : null])),
     // A short wait: the panel asks for this on every refresh.
     muse: musePresent() ? safe(() => Boolean(museState(5_000)?.trusted)) : null,
+    // Grok runs Claude Code's hooks (~/.claude/settings.json): ready when those are in.
+    grok: hasCli("grok", IS_WIN ? [] : [join(homedir(), ".local", "bin")]) ? Boolean(hooks.claude) : null,
     shell: Object.fromEntries(Object.entries(RC).map(([s, rc]) => [s, safe(() => { const f = rc(); return Boolean(f) && readText(f).includes(BEGIN); })])),
   };
   // Windows: whether PowerShell runs a profile at all (see executionPolicy).
