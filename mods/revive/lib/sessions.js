@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { validId } from "./core.js";
+import { codexPrompt, validId } from "./core.js";
 
 /** A folder as Claude Code and Droid name its store: every non-alphanumeric a dash. */
 const dashed = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, "-");
@@ -109,19 +109,24 @@ const FINDERS = {
    * Codex writes nothing that ties a rollout to its process. A process started
    * with its first message on the command line (`codex "…"`, as `hc run` starts
    * agents) is matched by it: the one rollout in its folder, started since the
-   * process, whose first message is a word of `argv`. Anything else finds
-   * nothing rather than guess. Checked by hand on Windows with codex 0.171.0.
+   * process, whose first message is that prompt (`codexPrompt`). A rollout
+   * there that has no first message yet, or not even its session_meta, may be
+   * this process's own while another's already matches: then it finds nothing
+   * until that one has written its message. Anything else finds nothing rather
+   * than guess. Checked by hand on Windows with codex 0.171.0.
    */
   codex: ({ dirs, cwd, startedMs, argv }) => {
-    if (!cwd || !Number.isFinite(startedMs) || !Array.isArray(argv)) return null;
-    const words = new Set(argv.slice(1).map((w) => String(w).trim()).filter(Boolean));
-    if (!words.size) return null;
+    if (!cwd || !Number.isFinite(startedMs)) return null;
+    const prompt = codexPrompt(argv)?.trim();
+    if (!prompt) return null;
     const found = new Set();
     for (const file of codexRollouts(dirs.codex, startedMs)) {
       const head = codexHead(file);
+      if (head.id === null) return null;
       if (!validId(head.id) || !sameFolder(head.cwd, cwd)) continue;
       if (!(head.at >= startedMs - 1000 && head.at <= startedMs + CODEX_START)) continue;
-      if (head.message !== null && words.has(head.message.trim())) found.add(head.id);
+      if (head.message === null) return null;
+      if (head.message.trim() === prompt) found.add(head.id);
     }
     return found.size === 1 ? [...found][0] : null;
   },

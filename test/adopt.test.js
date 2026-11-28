@@ -198,20 +198,29 @@ test("one session is adopted into one terminal only", POSIX_HARNESS, () => {
   assert.match(r.stdout, /t4 {2}Claude Code: another terminal holds the same session/);
 });
 
-test("adopt remembers a Codex session by the first message on its command line", POSIX_HARNESS, () => {
-  const w = world();
-  const work = w.folder("work");
-  // Its process is a real one (this test's), so `ps` gives the start the rollout is matched against.
+/**
+ * A Codex rollout in `w`'s home, started a second after this test's process
+ * (the terminals' program, so `ps` gives the start it is matched against);
+ * `message` null for one that hasn't written its first message yet.
+ */
+function codexRollout(w, { id, cwd, message }) {
   const started = Date.parse(since);
   const d = new Date(started);
   const dir = join(w.home, ".codex", "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `rollout-x-${D}.jsonl`), [
-    { type: "session_meta", payload: { id: D, cwd: work, timestamp: new Date(started + 1000).toISOString() } },
-    { type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: "review x.rs" }] } } },
+  writeFileSync(join(dir, `rollout-x-${id}.jsonl`), [
+    { type: "session_meta", payload: { id, cwd, timestamp: new Date(started + 1000).toISOString() } },
+    ...(message === null ? [] : [{ type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: message }] } } }]),
   ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+const listEntries = (w) => JSON.parse(execFileSync("node", [ENGINE, "list"], { encoding: "utf8", env: w.env() })).entries;
+
+test("adopt remembers a Codex session by the first message on its command line", POSIX_HARNESS, () => {
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: D, cwd: work, message: "review x.rs" });
   const t = w.terminal({ argv: ["codex", "--no-daemon", "-c", "features.hooks=false", "review x.rs"], cwd: work, fg: SHELL });
-  const list = JSON.parse(execFileSync("node", [ENGINE, "list"], { encoding: "utf8", env: w.env() })).entries[0];
+  const list = listEntries(w)[0];
   assert.equal(list.rec.session, D);
   assert.equal(list.rememberable, true);
   const r = w.run(["adopt"]);
@@ -221,7 +230,54 @@ test("adopt remembers a Codex session by the first message on its command line",
   assert.equal(labels["revive.agent"], "codex");
   assert.equal(labels["revive.session"], D);
   assert.equal(labels["revive.flags"], '["--no-daemon"]');
-  assert.match(resumeLine(readRecord(labels), { unattended: true }), new RegExp(`^cd -- ${re(work)} && REVIVE_RESUME=\S+ codex resume --no-daemon ${D}$`));
+  assert.match(resumeLine(readRecord(labels), { unattended: true }), new RegExp(`^cd -- ${re(work)} && REVIVE_RESUME=\\S+ codex resume --no-daemon ${D}$`));
+});
+
+test("adopt T won't remember a Codex session while another start in its folder has no first message yet", POSIX_HARNESS, () => {
+  // Two hooks-off Codex started together with the same prompt: A's rollout has
+  // its message, B's only its session_meta. Either may be t2's.
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "go" });
+  codexRollout(w, { id: B, cwd: work, message: null });
+  w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const t2 = w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  assert.deepEqual(listEntries(w).filter((e) => e.unrecorded), []);
+  const r = w.run(["adopt", t2]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Won't remember Codex in t2: Revive finds a Codex session only when its first message was given on the command line/);
+  assert.deepEqual(w.calls(), []);
+});
+
+test("adopt T won't remember a Codex session another terminal finds too", POSIX_HARNESS, () => {
+  // The other start hasn't written a rollout at all: both terminals find A's.
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "go" });
+  w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const t2 = w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const entries = listEntries(w);
+  assert.equal(entries.length, 2);
+  for (const e of entries) {
+    assert.equal(e.rec.session, A);
+    assert.equal(e.rememberable, false);
+    assert.equal(e.rememberWhy, "another terminal holds the same session");
+  }
+  const r = w.run(["adopt", t2]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Won't remember Codex in t2: another terminal holds the same session/);
+  assert.deepEqual(w.calls(), []);
+});
+
+test("adopt won't take a Codex option's value for its first message", POSIX_HARNESS, () => {
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "work" });
+  const t = w.terminal({ argv: ["codex", "--profile", "work"], cwd: work, fg: SHELL });
+  assert.deepEqual(listEntries(w).filter((e) => e.unrecorded), []);
+  const r = w.run(["adopt", t]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Revive finds a Codex session only when its first message was given on the command line/);
 });
 
 test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HARNESS, () => {

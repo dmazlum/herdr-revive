@@ -676,6 +676,17 @@ async function list(args) {
   primeOwners(terminals);
   const since = (pid) => (pid ? procs.get(pid)?.since ?? null : null);
   const entries = terminals.map((t) => describe(t, since(t.pid), focus, since(t.foreground?.pid), procs)).filter((e) => e.rec || e.address === focus);
+  // As adopt decides: a session found in two terminals, or already on record
+  // in another, can't be remembered from either.
+  const taken = new Set(entries.filter((e) => e.rec && !e.unrecorded).map((e) => e.rec.session));
+  const seen = new Map();
+  for (const e of entries) if (e.unrecorded) seen.set(e.rec.session, (seen.get(e.rec.session) ?? 0) + 1);
+  for (const e of entries) {
+    if (!e.unrecorded || !e.rememberable) continue;
+    const why = taken.has(e.rec.session) ? "its session is already remembered in another terminal"
+      : seen.get(e.rec.session) > 1 ? "another terminal holds the same session" : null;
+    if (why) { e.rememberable = false; e.rememberWhy = why; }
+  }
   // The setup only changes on install; the dialog asks for it when it opens and after.
   const out = { entries };
   if (args.includes("--setup")) out.setup = doctorReport();
@@ -809,20 +820,23 @@ function adoption(t, procs) {
  */
 async function adoptRunning({ only = null, dry = false } = {}) {
   const all = await listTerminals();
-  const local = all.filter((t) => !t.address.includes("/") && (!only || t.address === only));
-  if (only && !local.length) throw new Error(`${only} is not a live terminal on this computer.`);
+  const local = all.filter((t) => !t.address.includes("/"));
+  if (only && !local.some((t) => t.address === only)) throw new Error(`${only} is not a live terminal on this computer.`);
   const pids = local.flatMap((t) => [t.pid, t.foreground?.pid]).filter(Boolean);
   const procs = pids.length ? await processes([...new Set(pids)]) : new Map();
   primeOwners(local);
-  const results = [];
+  // Every local terminal is planned, even for `adopt T`: another one finding
+  // the same session means neither can be told for sure.
+  const plans = [];
   for (const t of local) {
     const plan = adoption(t, procs);
-    if (only && !plan) throw new Error(readRecord(t.labels) ? `${only} already has a remembered session.` : `No agent session in ${only}.`);
-    if (plan) results.push({ address: t.address, where: t.labels?.where ?? null, ...plan });
+    if (t.address === only && !plan) throw new Error(readRecord(t.labels) ? `${only} already has a remembered session.` : `No agent session in ${only}.`);
+    if (plan) plans.push({ address: t.address, where: t.labels?.where ?? null, ...plan });
   }
   const taken = new Set(all.map((t) => readRecord(t.labels)?.session).filter(Boolean));
   const seen = new Map();
-  for (const r of results) if (r.fields) seen.set(r.session, (seen.get(r.session) ?? 0) + 1);
+  for (const r of plans) if (r.fields) seen.set(r.session, (seen.get(r.session) ?? 0) + 1);
+  const results = only ? plans.filter((r) => r.address === only) : plans;
   for (const r of results) {
     if (!r.fields) continue;
     r.why = taken.has(r.session) ? "its session is already remembered in another terminal"

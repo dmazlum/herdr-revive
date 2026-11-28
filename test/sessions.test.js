@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentDirs, claudeProject, claudeStartFolder, findSession, sessionDir } from "../mods/revive/lib/sessions.js";
+import { codexPrompt } from "../mods/revive/lib/core.js";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -145,6 +146,70 @@ test("codex: a rollout with no message yet, or an old one only touched since, fi
   rollout(dirs, { id: A, message: null });
   rollout(dirs, { id: B, start: T0 - 60 * 60_000, written: T0 + 5_000, message: "go" });
   assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), null);
+});
+
+test("codex: a profile, model or config value is never taken for the first message", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "work" });
+  for (const argv of [
+    ["codex", "--profile", "work"],
+    ["codex", "-p", "work"],
+    ["codex", "-m", "work"],
+    ["codex", "--model=work"],
+    ["codex", "-c", "work"],
+    ["codex", "--enable", "work", "--no-daemon"],
+    ["node", "/npm/codex/bin/codex.js", "-C", "/x", "--sandbox", "work"],
+  ]) assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv }), null, argv.join(" "));
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: ["codex", "-p", "dev", "work"] }), A);
+});
+
+test("codex: the prompt on the command line, and none when it can't be told", () => {
+  assert.equal(codexPrompt(["codex", "fix it"]), "fix it");
+  assert.equal(codexPrompt(codexArgv("fix it")), "fix it");
+  assert.equal(codexPrompt(["codex", "fix it", "--no-daemon", "-m", "o3"]), "fix it", "options after the prompt");
+  assert.equal(codexPrompt(["codex", "-mo3", "--", "-p"]), "-p", "a prompt after --");
+  assert.equal(codexPrompt(["C:\\npm\\codex.exe", "--yolo", "go"]), "go");
+  assert.equal(codexPrompt(["codex"]), null);
+  assert.equal(codexPrompt(["codex", "--profile", "work"]), null);
+  assert.equal(codexPrompt(["codex", "resume", "--last", "go"]), null, "a resume");
+  assert.equal(codexPrompt(["codex", "fork", "go"]), null, "a fork");
+  assert.equal(codexPrompt(["codex", "exec", "go"]), null, "a one-shot run");
+  assert.equal(codexPrompt(["codex", "--some-new-option", "work", "go"]), null, "an option Revive doesn't know may take a value");
+  assert.equal(codexPrompt(["codex", "-i", "a.png", "go"]), null, "-i takes any number of files");
+  assert.equal(codexPrompt(["codex", "one", "two"]), null);
+  assert.equal(codexPrompt(["codex", "  "]), null);
+  assert.equal(codexPrompt(null), null);
+});
+
+test("codex: a rollout in the folder with no first message yet holds off a match", () => {
+  // Two Codex started together with the same prompt: A's rollout has its
+  // message, B's only its session_meta. B's terminal must not be given A's.
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "go" });
+  rollout(dirs, { id: B, start: T0 + 4_000, message: null });
+  const find = () => findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") });
+  assert.equal(find(), null);
+  // Once B has written its message, each has its own.
+  rollout(dirs, { id: B, start: T0 + 4_000, message: "something else" });
+  assert.equal(find(), A);
+});
+
+test("codex: a rollout not even started yet holds off a match", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "go" });
+  const d = new Date(T0 + 3_000);
+  const empty = join(dirs.codex, "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"), `rollout-x-${B}.jsonl`);
+  writeFileSync(empty, "");
+  at(empty, T0 + 4_000);
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), null);
+});
+
+test("codex: a pending rollout in another folder or from long before doesn't hold off a match", () => {
+  const dirs = agentDirs({ HOME: home() });
+  rollout(dirs, { id: A, message: "go" });
+  rollout(dirs, { id: B, cwd: "/elsewhere", message: null });
+  rollout(dirs, { id: C, start: T0 - 60 * 60_000, written: T0 + 5_000, message: null });
+  assert.equal(findSession("codex", { dirs, cwd: CWD, startedMs: T0, argv: codexArgv("go") }), A);
 });
 
 test("codex: the older user_message event and CODEX_HOME", () => {

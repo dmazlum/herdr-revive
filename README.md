@@ -390,12 +390,14 @@ shared background daemon, which Revive was not built for:
 - A Codex session its hooks didn't record (started before Revive was installed, or with
   `-c features.hooks=false`, as agents launching Codex in the background do to skip the
   hook trust prompt) is found only when its first message was given on the command line
-  (`codex "…"`): the one `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or under
+  (`codex [options] "…"`): the one `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or under
   `CODEX_HOME`) for its folder, started since its process, whose first message is that
-  word. Codex writes nothing that ties a session to its process, so anything less is not
-  found, and two such sessions with the same message in the same folder are both left
-  out. It is the session Codex started with: one switched to later (`/new`, `/resume`) is
-  not followed.
+  prompt. Codex writes nothing that ties a session to its process, so anything less is not
+  found: a command line whose prompt can't be told for sure (a subcommand, `-i`, an option
+  Revive doesn't know), two such sessions with the same message in the same folder, or
+  another session started there at the same time that has no first message yet (found
+  once it has one). It is the session Codex started with: one switched to later (`/new`,
+  `/resume`) is not followed.
 
 ### pi and omp
 
