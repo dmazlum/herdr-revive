@@ -60,8 +60,7 @@ else if (cmd === "label") {
   };
   let pid = 50_000;
   /** A live terminal whose foreground runs `argv` in `cwd`, with Claude Code's sessions/<pid>.json saying `session`. */
-  const terminal = ({ address = `t${terminals.length + 1}`, argv, cwd, session = null, labels = {}, where = null }) => {
-    const fg = ++pid;
+  const terminal = ({ address = `t${terminals.length + 1}`, argv, cwd, session = null, labels = {}, where = null, fg = ++pid }) => {
     if (session) writeFileSync(join(home, ".claude", "sessions", `${fg}.json`), JSON.stringify({ pid: fg, sessionId: session, cwd }));
     terminals.push({ address, state: "live", pid: SHELL, cwd, labels: { ...(where ? { where } : {}), ...labels }, foreground: { pid: fg, argv, cwd } });
     writeFileSync(state, JSON.stringify(terminals));
@@ -130,7 +129,7 @@ test("adopt skips recorded terminals, one-shot runs, unknown sessions and other 
     "  t2  Claude Code: a one-shot run, with no session to bring back",
     "  t3  Claude Code: Revive can't find its session from its files",
     "  t4  Claude Code: Revive can't find its session from its files",
-    "  t5  Codex: only a running Claude Code session can be remembered; start it again to record it",
+    "  t5  Codex: Revive finds a Codex session only when its first message was given on the command line; start it again to record it",
     "",
   ].join("\n"), "a recorded terminal, a shell and another machine's terminal say nothing");
 });
@@ -199,6 +198,88 @@ test("one session is adopted into one terminal only", POSIX_HARNESS, () => {
   assert.match(r.stdout, /t4 {2}Claude Code: another terminal holds the same session/);
 });
 
+/**
+ * A Codex rollout in `w`'s home, started a second after this test's process
+ * (the terminals' program, so `ps` gives the start it is matched against);
+ * `message` null for one that hasn't written its first message yet.
+ */
+function codexRollout(w, { id, cwd, message }) {
+  const started = Date.parse(since);
+  const d = new Date(started);
+  const dir = join(w.home, ".codex", "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `rollout-x-${id}.jsonl`), [
+    { type: "session_meta", payload: { id, cwd, timestamp: new Date(started + 1000).toISOString() } },
+    ...(message === null ? [] : [{ type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", content: [{ type: "text", text: message }] } } }]),
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+const listEntries = (w) => JSON.parse(execFileSync("node", [ENGINE, "list"], { encoding: "utf8", env: w.env() })).entries;
+
+test("adopt remembers a Codex session by the first message on its command line", POSIX_HARNESS, () => {
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: D, cwd: work, message: "review x.rs" });
+  const t = w.terminal({ argv: ["codex", "--no-daemon", "-c", "features.hooks=false", "review x.rs"], cwd: work, fg: SHELL });
+  const list = listEntries(w)[0];
+  assert.equal(list.rec.session, D);
+  assert.equal(list.rememberable, true);
+  const r = w.run(["adopt"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Remembered 1 running session:\n {2}t1 {2}Codex 3fbe1111 {2}\S+work\n$/);
+  const labels = w.labelsOf(t);
+  assert.equal(labels["revive.agent"], "codex");
+  assert.equal(labels["revive.session"], D);
+  assert.equal(labels["revive.flags"], '["--no-daemon"]');
+  assert.match(resumeLine(readRecord(labels), { unattended: true }), new RegExp(`^cd -- ${re(work)} && REVIVE_RESUME=\\S+ codex resume --no-daemon ${D}$`));
+});
+
+test("adopt T won't remember a Codex session while another start in its folder has no first message yet", POSIX_HARNESS, () => {
+  // Two hooks-off Codex started together with the same prompt: A's rollout has
+  // its message, B's only its session_meta. Either may be t2's.
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "go" });
+  codexRollout(w, { id: B, cwd: work, message: null });
+  w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const t2 = w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  assert.deepEqual(listEntries(w).filter((e) => e.unrecorded), []);
+  const r = w.run(["adopt", t2]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Won't remember Codex in t2: Revive finds a Codex session only when its first message was given on the command line/);
+  assert.deepEqual(w.calls(), []);
+});
+
+test("adopt T won't remember a Codex session another terminal finds too", POSIX_HARNESS, () => {
+  // The other start hasn't written a rollout at all: both terminals find A's.
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "go" });
+  w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const t2 = w.terminal({ argv: ["codex", "go"], cwd: work, fg: SHELL });
+  const entries = listEntries(w);
+  assert.equal(entries.length, 2);
+  for (const e of entries) {
+    assert.equal(e.rec.session, A);
+    assert.equal(e.rememberable, false);
+    assert.equal(e.rememberWhy, "another terminal holds the same session");
+  }
+  const r = w.run(["adopt", t2]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Won't remember Codex in t2: another terminal holds the same session/);
+  assert.deepEqual(w.calls(), []);
+});
+
+test("adopt won't take a Codex option's value for its first message", POSIX_HARNESS, () => {
+  const w = world();
+  const work = w.folder("work");
+  codexRollout(w, { id: A, cwd: work, message: "work" });
+  const t = w.terminal({ argv: ["codex", "--profile", "work"], cwd: work, fg: SHELL });
+  assert.deepEqual(listEntries(w).filter((e) => e.unrecorded), []);
+  const r = w.run(["adopt", t]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Revive finds a Codex session only when its first message was given on the command line/);
+});
+
 test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HARNESS, () => {
   const w = world();
   const work = w.folder("work");
@@ -213,7 +294,7 @@ test("adopt leaves Droid alone even when the dialog finds its session", POSIX_HA
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(w.calls(), []);
   assert.equal(w.labelsOf(t)["revive.session"], undefined);
-  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code session can be remembered/);
+  assert.match(r.stdout, /t1 {2}Droid: only a running Claude Code or Codex session can be remembered/);
 });
 
 test("a session found under this process's CLAUDE_CONFIG_DIR records that it needs it, by name", POSIX_HARNESS, () => {
@@ -315,7 +396,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   w.terminal({ argv: ["claude"], cwd: work, session: B });
   w.terminal({ argv: ["claude"], cwd: work, session: C, labels: { "revive.agent": "claude", "revive.session": C } });
   w.terminal({ argv: ["codex"], cwd: work });
-  const note = "2 running Claude Code sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
+  const note = "2 running sessions aren't remembered yet: revive.mjs adopt --dry-run lists them, and revive.mjs adopt remembers them.\n";
   const r = w.run(["install", "--no-shell"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^Updated:\n {2}\S+settings\.json\n/, "the hooks first");
@@ -324,7 +405,7 @@ test("install says how many running sessions aren't remembered, and remembers no
   // Again: nothing to change, and the same count.
   assert.equal(w.run(["install", "--no-shell"]).stdout, `Nothing to change.\n${note}`);
   w.run(["adopt", "t1"]);
-  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running Claude Code session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
+  assert.match(w.run(["install", "--no-shell"]).stdout, /^Nothing to change\.\n1 running session isn't remembered yet: revive\.mjs adopt --dry-run lists it, and revive\.mjs adopt remembers it\.\n$/);
   w.run(["adopt"]);
   assert.equal(w.run(["install", "--no-shell"]).stdout, "Nothing to change.\n", "nothing left to say");
   assert.doesNotMatch(w.run(["uninstall", "--no-shell"]).stdout, /remember/);

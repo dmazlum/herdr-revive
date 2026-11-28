@@ -65,8 +65,8 @@ What "experimental" means for each one is under [Limits](#limits).
 - **Resume by hand.** An agent that died under a shell that survived it (a crash, a `kill`)
   is listed as *Interrupted*, with a **Resume** button. One whose resume failed is listed
   as *Resume failed*, with a retry.
-- **Already running.** A Claude Code session started before Revive was installed can be
-  remembered with **Remember** in the dialog, or all at once with `revive.mjs adopt` (see
+- **Already running.** A Claude Code or Codex session nobody recorded (started before Revive
+  was installed, or with its hooks off) can be remembered with **Remember** in the dialog, or all at once with `revive.mjs adopt` (see
   [Limits](#limits)).
 - **Per terminal.** Turn automatic resume off for one terminal in the dialog, or for a
   whole shell with `REVIVE_AUTO=0`.
@@ -357,9 +357,9 @@ REVIVE_DEBUG=1 zsh               # say why a shell did or didn't resume
   running one from the files its agent writes (Claude Code: `sessions/<pid>.json`; Droid:
   the newest `~/.factory/sessions/<folder, dashed>/<id>.jsonl` written since it started;
   Cursor: the newest `~/.cursor/chats/<md5 of the folder>/<id>/`; Copilot CLI: the
-  `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process), so it can
-  be forked where the agent forks.
-  A running Claude Code session can be remembered with **Remember** in the dialog or with
+  `~/.copilot/session-state/<id>/` holding an `inuse.<pid>.lock` for its process; Codex: see
+  [Codex](#codex)), so it can be forked where the agent forks.
+  A running Claude Code or Codex session can be remembered with **Remember** in the dialog or with
   `revive.mjs adopt`, once it has a message. Any other agent comes back by itself only after it has been restarted once:
   Droid's and Cursor's newest file is a guess, good enough to show but not to keep.
 - An agent that died while its shell lived on is not resumed automatically, since nothing
@@ -387,6 +387,17 @@ shared background daemon, which Revive was not built for:
   warns that this can turn off features for other apps that share the daemon.
 - Codex fires `SessionStart` at a session's first message, so a session is recorded only
   from then.
+- A Codex session its hooks didn't record (started before Revive was installed, or with
+  `-c features.hooks=false`, as agents launching Codex in the background do to skip the
+  hook trust prompt) is found only when its first message was given on the command line
+  (`codex [options] "…"`): the one `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or under
+  `CODEX_HOME`) for its folder, started since its process, whose first message is that
+  prompt. Codex writes nothing that ties a session to its process, so anything less is not
+  found: a command line whose prompt can't be told for sure (a subcommand, `-i`, an option
+  Revive doesn't know), two such sessions with the same message in the same folder, or
+  another session started there at the same time that has no first message yet (found
+  once it has one). It is the session Codex started with: one switched to later (`/new`,
+  `/resume`) is not followed.
 
 ### pi and omp
 

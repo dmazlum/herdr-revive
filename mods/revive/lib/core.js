@@ -49,6 +49,51 @@ function codexOneShot(args) {
   return false;
 }
 
+// The interactive CLI's options that take no value (codex 0.160 to 0.171).
+const CODEX_SWITCHES = new Set([
+  "--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
+  "--dangerously-bypass-hook-trust", "--worktree", "--search", "--no-alt-screen", "--no-daemon",
+  "--yolo", "--full-auto",
+]);
+// Its subcommands: a first word that is one of them is not a prompt.
+const CODEX_COMMANDS = new Set([
+  "agents", "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "plugin", "app-server",
+  "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "a",
+  "resume", "queue", "archive", "delete", "migrate-rollouts", "unarchive", "fork", "cloud",
+  "exec-server", "features", "help", "proto",
+]);
+
+/**
+ * The first message an interactive Codex was started with (`codex [OPTIONS]
+ * [PROMPT]`), or null when its command line has none or can't be read for
+ * sure: a subcommand (`resume`, `fork`, `exec`, …), an option Revive doesn't
+ * know (it may take a value), `-i` (it takes any number of files, the prompt
+ * among them), or more than one word left over. Option values are skipped, so
+ * a profile or model is never taken for the prompt.
+ */
+export function codexPrompt(argv = []) {
+  if (!Array.isArray(argv)) return null;
+  // `codex …`, or npm's launcher run by its interpreter: `node …/bin/codex.js …`.
+  let start = argsStart("codex", argv);
+  if (start === 1 && argv.length > 1 && INTERPRETERS.includes(base(argv[0]))) start = 2;
+  const args = argv.slice(start).map(String);
+  const words = [];
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (word === "--") { words.push(...args.slice(i + 1)); break; }
+    if (!word.startsWith("-") || word === "-") { words.push(word); continue; }
+    if (word === "-i" || word === "--image" || word.startsWith("--image=") || /^-i./.test(word)) return null;
+    if (CODEX_SWITCHES.has(word)) continue;
+    if (CODEX_VALUE_FLAGS.has(word)) { i++; continue; }
+    // `--model=o3`, or a short option with its value attached (`-mo3`).
+    if (word.startsWith("--") && CODEX_VALUE_FLAGS.has(word.slice(0, word.indexOf("=")))) continue;
+    if (!word.startsWith("--") && word.length > 2 && CODEX_VALUE_FLAGS.has(word.slice(0, 2))) continue;
+    return null;
+  }
+  if (words.length !== 1 || CODEX_COMMANDS.has(words[0])) return null;
+  return words[0].trim() ? words[0] : null;
+}
+
 /**
  * The agents Revive can bring back, one entry each:
  * - `name`     what the person reads

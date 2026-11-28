@@ -93,6 +93,7 @@ const STATE = {
 const NEEDS_YOU = new Set(["lost", "interrupted", "failed"]);
 // Claude Code and pi write a session down only once it has a message; until then a resume finds nothing.
 const NO_MESSAGE = "This session has no message yet, so there is nothing to fork. Send it one first.";
+const NOT_RECORDED = "Not recorded when it started (before Revive was installed, or with its hooks off)";
 const NO_MESSAGE_UNRECORDED = "This session has no message yet, so there is nothing to fork or remember. Send it one first.";
 
 async function engine(args) {
@@ -442,14 +443,14 @@ export default class Revive extends View {
     // Resume by hand that the engine would refuse: why, and what to run instead.
     const stuck = NEEDS_YOU.has(state) ? unresumable(rec) : null;
     const byHand = stuck?.needs ? needsCommand(rec, { dialect: onWindows() ? "pwsh" : "posix" }) : null;
-    // Started before Revive was installed, and a Claude Code session (the
-    // engine says): Remember records it. No message yet: nothing to remember.
+    // Not recorded when it started, and a session the engine can find for
+    // sure (Claude Code, Codex): Remember records it. No message yet: nothing to remember.
     const remembers = Boolean(entry.unrecorded) && entry.rememberable != null;
     const rememberable = remembers && entry.rememberable && entry.forkable !== false;
     const notes = [
-      remembers ? "Started before Revive was installed: it can be forked, but won't come back by itself until you remember it."
-        : entry.unrecorded ? (forks ? "Started before Revive was installed: it can be forked, but won't come back by itself."
-          : "Started before Revive was installed: it won't come back by itself.") : null,
+      remembers ? `${NOT_RECORDED}: it can be forked, but won't come back by itself until you remember it.`
+        : entry.unrecorded ? (forks ? `${NOT_RECORDED}: it can be forked, but won't come back by itself.`
+          : `${NOT_RECORDED}: it won't come back by itself.`) : null,
       running && !forks ? `${agent?.name ?? rec.agent} can't fork a session.` : null,
       forks && empty ? blocked ?? (remembers ? NO_MESSAGE_UNRECORDED : NO_MESSAGE) : null,
       remembers && !entry.rememberable && entry.forkable !== false ? `Revive can't remember it: ${entry.rememberWhy}.` : null,
